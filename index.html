@@ -1,0 +1,3251 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1a1a1a">
+<title>GanTODO — ガントチャート付きTODO</title>
+<style>
+:root {
+  --bg: #1a1a1a;
+  --bg2: #222226;
+  --bg3: #2a2a30;
+  --bg-hover: #33333a;
+  --text: #f0f0f0;
+  --text-dim: #9a9aa5;
+  --text-faint: #6a6a75;
+  --border: #3a3a42;
+  --accent: #4f9cf9;
+  --accent-dim: #2b5aa0;
+  --danger: #e5534b;
+  --warn: #e8b93e;
+  --ok: #57ab5a;
+  --prio-high: #e5534b;
+  --prio-medium: #e8b93e;
+  --prio-low: #4f9cf9;
+  --prio-none: #55555f;
+  --milestone: #c678dd;
+  --radius: 8px;
+  --sidebar-w: 232px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", Meiryo, sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+}
+button { font-family: inherit; }
+input, select, textarea {
+  font-family: inherit; font-size: 14px;
+  background: var(--bg3); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px;
+}
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+::placeholder { color: var(--text-faint); }
+
+/* ===== Layout ===== */
+#app { display: flex; height: 100%; }
+#sidebar {
+  width: var(--sidebar-w); min-width: var(--sidebar-w);
+  background: var(--bg2); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow-y: auto;
+  padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
+  z-index: 30;
+}
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#view-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+#view-title { font-size: 18px; font-weight: 700; margin-right: auto; }
+#view-body { flex: 1; overflow: auto; padding: 12px 16px 80px; }
+
+/* ===== Sidebar ===== */
+.side-search { display: flex; margin-bottom: 10px; }
+.side-search input { flex: 1; }
+.nav-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 6px; cursor: pointer;
+  color: var(--text); user-select: none;
+}
+.nav-item:hover { background: var(--bg-hover); }
+.nav-item.active { background: var(--accent-dim); }
+.nav-item .cnt {
+  margin-left: auto; font-size: 11px; color: var(--text-dim);
+  background: var(--bg3); border-radius: 10px; padding: 1px 7px;
+}
+.nav-item .cnt.alert { background: var(--danger); color: #fff; }
+.side-sec {
+  display: flex; align-items: center;
+  font-size: 11px; color: var(--text-faint); font-weight: 700;
+  margin: 14px 6px 4px; letter-spacing: .5px;
+}
+.side-sec button {
+  margin-left: auto; background: none; border: none; color: var(--text-dim);
+  cursor: pointer; font-size: 15px; line-height: 1;
+}
+.side-sec button:hover { color: var(--accent); }
+.proj-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+/* ===== Header buttons ===== */
+.btn {
+  background: var(--bg3); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 12px; cursor: pointer; font-size: 13px;
+}
+.btn:hover { background: var(--bg-hover); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.danger { color: var(--danger); border-color: var(--danger); background: none; }
+.btn.small { padding: 3px 8px; font-size: 12px; }
+.btn-group { display: flex; }
+.btn-group .btn { border-radius: 0; border-right-width: 0; }
+.btn-group .btn:first-child { border-radius: 6px 0 0 6px; }
+.btn-group .btn:last-child { border-radius: 0 6px 6px 0; border-right-width: 1px; }
+.btn-group .btn.on { background: var(--accent-dim); }
+
+/* ===== Quick add ===== */
+.quick-add { display: flex; gap: 8px; margin-bottom: 12px; }
+.quick-add input { flex: 1; padding: 9px 12px; }
+
+/* ===== Task list ===== */
+.sec-head {
+  display: flex; align-items: center; gap: 6px;
+  font-weight: 700; color: var(--text-dim);
+  margin: 14px 0 4px; cursor: pointer; user-select: none;
+}
+.sec-head .tri { transition: transform .15s; font-size: 10px; }
+.sec-head.collapsed .tri { transform: rotate(-90deg); }
+.task-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.task-row:hover { background: var(--bg-hover); }
+/* D&D ドロップ位置の表示: 上端=前に挿入 / 下端=後ろに挿入 / 中央=サブタスク化 */
+.task-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.task-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.task-row.drop-into { background: var(--accent-dim); outline: 1px dashed var(--accent); }
+.task-row.prio-high { border-left-color: var(--prio-high); }
+.task-row.prio-medium { border-left-color: var(--prio-medium); }
+.task-row.prio-low { border-left-color: var(--prio-low); }
+.task-row.done .t-title { text-decoration: line-through; color: var(--text-faint); }
+.task-row.blocked { opacity: .6; }
+.task-check {
+  width: 18px; height: 18px; min-width: 18px; margin-top: 1px;
+  border: 2px solid var(--text-dim); border-radius: 5px; /* TickTick風の角丸四角 */
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; color: transparent; background: none;
+}
+.task-check:hover { color: var(--text-faint); }
+/* 優先度で枠の色を変える（TickTick風） */
+.task-check.p-high { border-color: var(--prio-high); }
+.task-check.p-medium { border-color: var(--prio-medium); }
+.task-check.p-low { border-color: var(--prio-low); }
+.task-check.checked { background: var(--ok); border-color: var(--ok); color: #fff; }
+.t-main { flex: 1; min-width: 0; }
+.t-title { word-break: break-word; }
+.t-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+.badge {
+  font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: var(--bg3); color: var(--text-dim); white-space: nowrap;
+}
+.badge.due { color: var(--warn); }
+.badge.overdue { background: var(--danger); color: #fff; }
+.badge.blocked { color: var(--danger); }
+.badge.waiting { color: var(--warn); }
+.badge.ready { color: var(--ok); }
+.badge.tag { color: var(--accent); }
+.badge.ms { color: var(--milestone); }
+.t-prog {
+  width: 46px; min-width: 46px; text-align: right;
+  font-size: 11px; color: var(--text-dim); margin-top: 3px;
+}
+.subtasks { margin-left: 26px; }
+.empty-msg { color: var(--text-faint); text-align: center; padding: 40px 0; }
+.tw {
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  width: 16px; min-width: 16px; padding: 0; margin-top: 3px; font-size: 9px;
+  transition: transform .15s;
+}
+.tw.collapsed { transform: rotate(-90deg); }
+.tw-sp { width: 16px; min-width: 16px; }
+
+/* ===== Today page ===== */
+.today-score {
+  min-width: 34px; text-align: center; font-size: 11px; font-weight: 700;
+  color: var(--accent); background: var(--bg3); border-radius: 4px;
+  padding: 2px 4px; margin-top: 2px;
+}
+.today-row.dragover { border-top: 2px solid var(--accent); }
+.timed-row { display: flex; gap: 8px; align-items: center; padding: 6px 8px; }
+.timed-row .time { color: var(--warn); font-weight: 700; min-width: 90px; font-size: 13px; }
+.today-head { display: flex; align-items: center; gap: 8px; margin: 16px 0 6px; font-weight: 700; color: var(--text-dim); }
+
+/* ===== Dashboard ===== */
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.dash-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; }
+.dash-card h3 { font-size: 13px; color: var(--text-dim); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.dash-card h3 .cnt { margin-left: auto; font-size: 12px; }
+.mini-task { display: flex; gap: 6px; padding: 4px 2px; cursor: pointer; border-radius: 4px; align-items: baseline; }
+.mini-task:hover { background: var(--bg-hover); }
+.mini-task .d { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.proj-sum { padding: 6px 2px; cursor: pointer; border-radius: 4px; }
+.proj-sum:hover { background: var(--bg-hover); }
+.proj-sum .bar-bg { height: 6px; background: var(--bg3); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+.proj-sum .bar-fg { height: 100%; background: var(--ok); }
+.proj-sum .meta { display: flex; font-size: 11px; color: var(--text-dim); margin-top: 2px; gap: 8px; }
+
+/* ===== Gantt ===== */
+#gantt-wrap { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg2); }
+#gantt-names { min-width: 200px; max-width: 200px; border-right: 1px solid var(--border); overflow: hidden; }
+#gantt-scroll { flex: 1; overflow-x: auto; overflow-y: hidden; position: relative; }
+.g-name-row {
+  height: 34px; display: flex; align-items: center; gap: 5px;
+  padding: 0 8px; font-size: 12px; border-bottom: 1px solid var(--bg3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+.g-name-row:hover { background: var(--bg-hover); }
+.g-name-row.head { font-weight: 700; color: var(--text-dim); background: var(--bg3); }
+.g-name-row .nm { overflow: hidden; text-overflow: ellipsis; }
+.g-hdr-row { height: 34px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--text-faint); font-weight: 700; border-bottom: 1px solid var(--bg3); }
+svg text { user-select: none; }
+
+/* ===== Memos ===== */
+#memo-layout { display: flex; gap: 14px; height: 100%; }
+#memo-list { width: 250px; min-width: 250px; overflow-y: auto; }
+.memo-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.memo-item:hover { background: var(--bg-hover); }
+.memo-item.active { border-color: var(--accent); background: var(--bg3); }
+.memo-item .m-title { font-weight: 600; }
+.memo-item .m-date { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+#memo-editor { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#memo-body { flex: 1; resize: none; min-height: 200px; line-height: 1.6; }
+#memo-preview {
+  flex: 1; overflow-y: auto; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 12px 16px; line-height: 1.7; min-height: 200px;
+}
+#memo-preview h1 { font-size: 20px; margin: 10px 0 6px; }
+#memo-preview h2 { font-size: 17px; margin: 10px 0 6px; }
+#memo-preview h3 { font-size: 15px; margin: 8px 0 4px; }
+#memo-preview ul { margin: 4px 0 4px 22px; }
+#memo-preview li.chk { list-style: none; margin-left: -18px; }
+#memo-preview code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+#memo-preview a { color: var(--accent); }
+#memo-preview p { margin: 4px 0; }
+
+/* ===== Modal ===== */
+.modal-bg {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center; z-index: 100;
+  padding: 16px;
+}
+.modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  width: 560px; max-width: 100%; max-height: 92vh; overflow-y: auto;
+  padding: 18px;
+}
+.modal h2 { font-size: 16px; margin-bottom: 14px; }
+.f-row { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.f-col { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 130px; }
+.f-col > label { font-size: 11px; color: var(--text-dim); font-weight: 600; }
+.f-col input, .f-col select, .f-col textarea { width: 100%; }
+.f-col input[type="radio"], .f-col input[type="checkbox"] { width: auto; flex: none; margin: 0; }
+.modal-foot { display: flex; gap: 8px; margin-top: 16px; }
+.modal-foot .spacer { flex: 1; }
+.dep-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 12px;
+  padding: 2px 8px; font-size: 12px; margin: 2px 4px 2px 0;
+}
+.dep-chip button { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 13px; }
+.subtask-line { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+.subtask-line .st-title { flex: 1; cursor: pointer; }
+.subtask-line .st-title:hover { color: var(--accent); }
+.subtask-line .st-title.done { text-decoration: line-through; color: var(--text-faint); }
+
+/* ===== グローバル追加バー（TickTick風） ===== */
+#global-add {
+  display: flex; gap: 6px; align-items: center;
+  padding: 10px 16px 0; position: relative;
+}
+#qa-input { flex: 1; padding: 9px 12px; border-radius: 8px; }
+.qa-chip {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 6px; padding: 7px 10px; cursor: pointer; font-size: 12px; white-space: nowrap;
+}
+.qa-chip:hover { background: var(--bg-hover); }
+.qa-chip.on { border-color: var(--accent); color: var(--accent); }
+#qa-popover {
+  position: absolute; right: 16px; top: calc(100% + 4px);
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px; z-index: 80; width: 270px; display: none;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+}
+#qa-popover.open { display: block; }
+.qa-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.qa-row:last-child { margin-bottom: 0; }
+.qa-row > label { width: 54px; min-width: 54px; font-size: 11px; color: var(--text-dim); font-weight: 600; }
+.qa-row input, .qa-row select { flex: 1; min-width: 0; }
+.flag-btn { background: none; border: none; font-size: 19px; cursor: pointer; opacity: .35; padding: 2px 5px; line-height: 1; }
+.flag-btn.sel { opacity: 1; transform: scale(1.15); }
+.flag-btn:hover { opacity: .8; }
+
+/* ===== 右サイド詳細パネル（TickTick風） ===== */
+#detail-panel {
+  display: none; background: var(--bg2); border-left: 1px solid var(--border);
+  overflow-y: auto; overflow-x: hidden;
+}
+#detail-panel.open { display: block; width: 400px; min-width: 400px; padding: 14px 16px 40px; }
+.dp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.dp-flags { display: flex; gap: 2px; }
+.dp-status { font-size: 11px; color: var(--text-dim); }
+.dp-title {
+  width: 100%; font-size: 16px; font-weight: 700;
+  background: none; border: none; border-bottom: 1px solid var(--border);
+  border-radius: 0; padding: 6px 2px;
+}
+.dp-title:focus { border-bottom-color: var(--accent); }
+.dp-crumb { font-size: 12px; color: var(--text-dim); cursor: pointer; margin-bottom: 6px; }
+.dp-crumb:hover { color: var(--accent); }
+.dp-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; cursor: pointer; }
+.dp-chips:hover .badge { background: var(--bg-hover); }
+.dp-foot {
+  display: flex; gap: 6px; align-items: center;
+  margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border);
+}
+.dp-proj { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* メモ欄: 初期高さ=画面の1/3、内容に応じて拡張 */
+#tm-note, #tm-note-view { min-height: 33vh; width: 100%; }
+#tm-note { resize: vertical; overflow: hidden; line-height: 1.6; }
+#tm-note-view {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; line-height: 1.7; cursor: text; word-break: break-word;
+}
+#tm-note-view h1 { font-size: 17px; margin: 8px 0 4px; }
+#tm-note-view h2 { font-size: 15px; margin: 8px 0 4px; }
+#tm-note-view h3 { font-size: 14px; margin: 6px 0 3px; }
+#tm-note-view ul { margin: 4px 0 4px 20px; }
+#tm-note-view li.chk { list-style: none; margin-left: -18px; }
+#tm-note-view li.chk input { cursor: pointer; }
+#tm-note-view code { background: var(--bg2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+#tm-note-view a { color: var(--accent); }
+#tm-note-view p { margin: 4px 0; }
+/* 添付 */
+.att-item {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px;
+  background: var(--bg3);
+}
+.att-thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; cursor: pointer; background: var(--bg2); }
+.att-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; }
+.att-name:hover { color: var(--accent); text-decoration: underline; }
+.att-size { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+@media (max-width: 1000px) {
+  #detail-panel.open {
+    position: fixed; right: 0; top: 0; bottom: 0; z-index: 60;
+    width: min(420px, 100vw); min-width: 0;
+    box-shadow: -8px 0 24px rgba(0,0,0,.5);
+  }
+}
+@media (max-width: 760px) {
+  #global-add { padding: 8px 10px 0; flex-wrap: wrap; }
+  /* iOS Safariは16px未満の入力欄にフォーカスすると自動ズームするため、スマホでは16pxに */
+  input, select, textarea { font-size: 16px; }
+  /* iOSの日付・時刻入力は独自の最小幅を持ち2列からはみ出すため、見た目を通常入力に揃える */
+  input[type="date"], input[type="time"] {
+    min-width: 0; width: 100%;
+    -webkit-appearance: none; appearance: none;
+    min-height: 40px; text-align: left;
+  }
+  .f-col { min-width: 100px; }
+  #detail-panel.open { padding: 12px 12px 60px; }
+}
+
+/* ===== Toast ===== */
+#toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 300; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.toast {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  padding: 10px 18px; border-radius: 8px; font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5); animation: pop .2s;
+  max-width: 90vw;
+}
+.toast.warn { border-color: var(--warn); }
+.toast.error { border-color: var(--danger); }
+@keyframes pop { from { opacity: 0; transform: translateY(8px); } }
+
+/* ===== FAB & Mobile ===== */
+#fab {
+  position: fixed; right: 20px; bottom: calc(20px + env(safe-area-inset-bottom));
+  width: 54px; height: 54px; border-radius: 50%; border: none;
+  background: var(--accent); color: #fff; font-size: 28px; cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,.5); z-index: 50; display: none;
+  align-items: center; justify-content: center; line-height: 1;
+}
+#menu-btn { display: inline-flex; } /* PCでもサイドバー開閉に使う */
+#sidebar-bg { display: none; }
+@media (min-width: 761px) {
+  body.sidebar-hidden #sidebar { display: none; }
+}
+@media (max-width: 760px) {
+  #sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    transform: translateX(-100%); transition: transform .2s;
+  }
+  #sidebar.open { transform: translateX(0); }
+  #sidebar-bg.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 25; }
+  #menu-btn { display: inline-flex; }
+  #fab { display: flex; }
+  #memo-layout { flex-direction: column; }
+  #memo-list { width: 100%; max-height: 30%; }
+  #gantt-names { min-width: 120px; max-width: 120px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <nav id="sidebar" data-testid="sidebar">
+    <div class="side-search">
+      <input id="search-input" data-testid="search-input" type="search" placeholder="検索（/）">
+    </div>
+    <div id="nav-smart"></div>
+    <div class="side-sec">プロジェクト <button id="add-project-btn" data-testid="add-project-btn" title="プロジェクト追加">＋</button></div>
+    <div id="nav-projects"></div>
+    <div class="side-sec">その他</div>
+    <div id="nav-misc"></div>
+  </nav>
+  <div id="sidebar-bg"></div>
+  <div id="main">
+    <div id="view-header">
+      <button id="menu-btn" class="btn" aria-label="メニュー">☰</button>
+      <div id="view-title" data-testid="view-title"></div>
+      <div id="view-actions"></div>
+    </div>
+    <div id="global-add">
+      <input id="qa-input" data-testid="quick-add" type="text" placeholder="＋ タスクを追加">
+      <button class="qa-chip" id="qa-today" data-testid="qa-today" title="納期を今日にする">📅 今日</button>
+      <button class="qa-chip" id="qa-more" data-testid="qa-more" title="詳細オプション">▼</button>
+      <button class="btn primary" id="qa-add-btn" data-testid="quick-add-btn">追加</button>
+      <div id="qa-popover" data-testid="qa-popover">
+        <div class="qa-row"><label>優先度</label>
+          <div>
+            <button class="flag-btn" data-p="high" data-testid="qa-prio-high" style="color:var(--prio-high)" title="高">⚑</button>
+            <button class="flag-btn" data-p="medium" data-testid="qa-prio-medium" style="color:var(--prio-medium)" title="中">⚑</button>
+            <button class="flag-btn" data-p="low" data-testid="qa-prio-low" style="color:var(--prio-low)" title="低">⚑</button>
+            <button class="flag-btn" data-p="none" data-testid="qa-prio-none" style="color:var(--text-dim)" title="なし">⚐</button>
+          </div>
+        </div>
+        <div class="qa-row"><label>追加先</label><select id="qa-project" data-testid="qa-project"></select></div>
+        <div class="qa-row"><label>納期</label><input type="date" id="qa-due" data-testid="qa-due"><input type="time" id="qa-due-time" data-testid="qa-due-time" title="時刻（任意）" style="flex:0.8"></div>
+        <div class="qa-row"><label>開始日</label><input type="date" id="qa-start" data-testid="qa-start"></div>
+        <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"></div>
+        <div class="qa-row"><label>タグ</label><input id="qa-tags" data-testid="qa-tags" placeholder="カンマ区切り"></div>
+      </div>
+    </div>
+    <div id="view-body" data-testid="view-body"></div>
+  </div>
+  <aside id="detail-panel" data-testid="detail-panel"></aside>
+</div>
+<button id="fab" data-testid="fab">＋</button>
+<div id="modal-root"></div>
+<div id="toasts"></div>
+<script>
+"use strict";
+/*========================================================
+  CORE: 状態・永続化・ユーティリティ
+========================================================*/
+const LS_KEY = "gantodo_v1";
+const PRIO_LABEL = { high: "高", medium: "中", low: "低", none: "なし" };
+const PRIO_COLOR = { high: "var(--prio-high)", medium: "var(--prio-medium)", low: "var(--prio-low)", none: "var(--prio-none)" };
+const PROJ_COLORS = ["#4f9cf9","#57ab5a","#e8b93e","#e5534b","#c678dd","#56b6c2","#e69138","#8ab4f8"];
+
+let state = null;
+let view = { type: "today" };          // 現在のビュー
+let detailTaskId = null;               // 右パネルで開いているタスク
+let noteEditing = false;               // タスクメモ欄が編集モードか
+let detailExpanded = false;            // 詳細設定（プロジェクト・日付等）を展開しているか
+let ganttZoom = "day";                  // day | week | month
+let ganttScrollMemo = null;             // ガントの横スクロール位置（再描画で失わないよう記憶）
+let editingMemoId = null;
+let memoPreview = false;
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function nowISO() { return new Date().toISOString(); }
+
+function defaultState() {
+  return {
+    version: 1,
+    projects: [],
+    sections: [],
+    tasks: [],
+    memos: [],
+    today: { date: todayStr(), manualOrder: null, manualAdded: [] },
+    settings: { gasUrl: "", gasKey: "", weekStart: 1, sidebarHidden: false, ganttHideDone: false },
+  };
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return defaultState();
+    const s = JSON.parse(raw);
+    const d = defaultState();
+    for (const k of Object.keys(d)) if (s[k] === undefined) s[k] = d[k];
+    // 「今日やる」リストは日付が変わったらリセット
+    if (s.today.date !== todayStr()) s.today = { date: todayStr(), manualOrder: null, manualAdded: [] };
+    // ゴミ箱の30日超えタスクを完全削除
+    const limit = addDays(todayStr(), -30);
+    s.tasks = s.tasks.filter(t => !t.deletedAt || t.deletedAt.slice(0, 10) >= limit);
+    s.memos = s.memos.filter(m => !m.deletedAt || m.deletedAt.slice(0, 10) >= limit);
+    // サブタスクのプロジェクトを最上位の親に揃える（過去データの補正）
+    fixSubtaskProjects(s.tasks);
+    return s;
+  } catch (e) {
+    console.error("loadState failed", e);
+    return defaultState();
+  }
+}
+
+// サブタスクのprojectIdを最上位の親に揃える（読み込み時の補正・CSVインポート後の補正で共用）
+function fixSubtaskProjects(tasks) {
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  for (const t of tasks) {
+    if (!t.parentTaskId || !byId.has(t.parentTaskId)) continue;
+    let root = t;
+    const seen = new Set();
+    while (root.parentTaskId && byId.has(root.parentTaskId) && !seen.has(root.id)) {
+      seen.add(root.id);
+      root = byId.get(root.parentTaskId);
+    }
+    const pid = root.projectId || null;
+    if ((t.projectId || null) !== pid) { t.projectId = pid; t.sectionId = null; t.updatedAt = nowISO(); }
+  }
+}
+
+function save() {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+    queueSync(); // 同期設定があれば、変更後しばらくして自動同期
+  } catch (e) {
+    toast("保存に失敗しました: " + e.message, "error");
+  }
+}
+
+// 通常のsave()より厳格な版: 失敗したら直前の状態に巻き戻す（大容量インポート専用）
+function saveOrRevert(beforeJSON) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+    return true;
+  } catch (e) {
+    try { state = JSON.parse(beforeJSON); } catch { /* 復元不能なら現状維持 */ }
+    toast("⚠ 保存容量の上限を超えたため反映されませんでした。「メモを要約してインポート」で再度お試しください", "error");
+    return false;
+  }
+}
+function commit() { save(); render(); }
+
+/* ---- 日付ユーティリティ（すべて 'YYYY-MM-DD' 文字列で扱う） ---- */
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function parseDate(s) {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+function fmtDate(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function addDays(s, n) {
+  const d = parseDate(s);
+  d.setDate(d.getDate() + n);
+  return fmtDate(d);
+}
+function diffDays(a, b) { // a - b（日数）
+  return Math.round((parseDate(a) - parseDate(b)) / 86400000);
+}
+function fmtDisp(s) { // 表示用 M/D
+  if (!s) return "";
+  const d = parseDate(s);
+  return (d.getMonth() + 1) + "/" + d.getDate();
+}
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+function fmtDispW(s) {
+  if (!s) return "";
+  const d = parseDate(s);
+  return (d.getMonth() + 1) + "/" + d.getDate() + "(" + WEEKDAYS[d.getDay()] + ")";
+}
+
+/* ---- エンティティ取得 ---- */
+function getTask(id) { return state.tasks.find(t => t.id === id); }
+function getProject(id) { return state.projects.find(p => p.id === id); }
+function getSection(id) { return state.sections.find(s => s.id === id); }
+function liveTasks() { return state.tasks.filter(t => !t.deletedAt); }
+function activeTasks() { return liveTasks().filter(t => t.status === "active"); }
+
+/* ---- HTMLエスケープ ---- */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ---- IME変換中のEnter判定（変換確定のEnterでタスクを作らないため） ---- */
+function isIMEEnter(e) {
+  return e.isComposing || e.keyCode === 229;
+}
+
+/* ---- 添付ファイル保存（IndexedDB: localStorageの容量制限を回避） ---- */
+let idbHandle = null;
+function idbOpen() {
+  return new Promise((res, rej) => {
+    if (idbHandle) return res(idbHandle);
+    const rq = indexedDB.open("gantodo_files", 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore("files", { keyPath: "id" });
+    rq.onsuccess = () => { idbHandle = rq.result; res(idbHandle); };
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function fileSave(id, blob) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("files", "readwrite");
+    tx.objectStore("files").put({ id, blob });
+    tx.oncomplete = res;
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function fileGet(id) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const rq = db.transaction("files").objectStore("files").get(id);
+    rq.onsuccess = () => res(rq.result ? rq.result.blob : null);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function fileDelete(id) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("files", "readwrite");
+    tx.objectStore("files").delete(id);
+    tx.oncomplete = res;
+    tx.onerror = () => rej(tx.error);
+  });
+}
+// 大きい画像は自動で縮小してから保存（最長辺1600px・JPEG化）
+async function maybeCompressImage(file) {
+  if (!file.type.startsWith("image/") || file.type === "image/gif" || file.size < 300 * 1024) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.82));
+    return blob && blob.size < file.size ? blob : file;
+  } catch { return file; }
+}
+async function attachFiles(t, files) {
+  if (!files.length) return;
+  try {
+    for (const f of files) {
+      const blob = await maybeCompressImage(f);
+      const id = uid();
+      await fileSave(id, blob);
+      t.attachments = [...(t.attachments || []), {
+        id,
+        name: f.name || ("貼り付け画像-" + todayStr() + (blob.type === "image/jpeg" ? ".jpg" : ".png")),
+        type: blob.type || f.type,
+        size: blob.size,
+        createdAt: nowISO(),
+      }];
+    }
+    touch(t);
+    commit();
+    toast(files.length + "件添付しました");
+  } catch (e) {
+    toast("添付に失敗しました: " + e.message, "error");
+  }
+}
+
+/* ---- トースト ---- */
+function toast(msg, kind) {
+  const box = document.getElementById("toasts");
+  while (box.children.length >= 3) box.firstChild.remove(); // 溜まりすぎ防止
+  const el = document.createElement("div");
+  el.className = "toast" + (kind ? " " + kind : "");
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+/*========================================================
+  LOGIC: 依存関係・着手可否・自動優先スコア
+========================================================*/
+// このタスクが（未完了の先行タスクにより）ブロックされているか
+function isBlocked(task) {
+  return (task.blockedBy || []).some(id => {
+    const p = getTask(id);
+    return p && !p.deletedAt && p.status !== "completed";
+  });
+}
+// 開始可能日がまだ来ていない（待機中）か
+function isWaiting(task) {
+  return !!task.earliestStartDate && todayStr() < task.earliestStartDate;
+}
+// 今日着手できるか（仕様 11.6 canStart）
+function canStart(task) {
+  return !isBlocked(task) && !isWaiting(task);
+}
+// 循環依存チェック: taskId の blockedBy に depId を追加すると循環するか
+function wouldCycle(taskId, depId) {
+  if (taskId === depId) return true;
+  const visited = new Set();
+  const stack = [depId]; // depId の先行を辿って taskId に到達したら循環
+  while (stack.length) {
+    const cur = stack.pop();
+    if (cur === taskId) return true;
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    const t = getTask(cur);
+    if (t) for (const b of t.blockedBy || []) stack.push(b);
+  }
+  return false;
+}
+// 後続タスク（このタスクの完了を待つタスク）の一覧
+function successorsOf(taskId) {
+  return activeTasks().filter(t => (t.blockedBy || []).includes(taskId));
+}
+// 後続タスク総数（再帰・重複除外）: 仕様 12.2 のスコア用
+function countAllSuccessors(taskId) {
+  const seen = new Set();
+  const stack = [taskId];
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const s of successorsOf(cur)) {
+      if (!seen.has(s.id)) { seen.add(s.id); stack.push(s.id); }
+    }
+  }
+  return seen.size;
+}
+
+// 「今日やる理由」があるか（仕様 12.1）
+function hasTodayReason(t) {
+  const today = todayStr();
+  if (t.dueDate && t.dueDate <= today) return true;
+  if (t.startDate && t.startDate <= today && (!t.endDate || today <= t.endDate)) return true;
+  if (t.nextAction && t.nextAction.date === today) return true;
+  if (state.today.manualAdded.includes(t.id)) return true;
+  return false;
+}
+// 「今日すること」の表示対象
+function todayTasks() {
+  return activeTasks().filter(t => canStart(t) && hasTodayReason(t));
+}
+
+// 自動優先スコア（仕様 12.2）
+const SCORE_W = { due: 40, priority: 20, successor: 25, time: 15 };
+function autoPriorityScore(t) {
+  const today = todayStr();
+  const daysToDue = t.dueDate ? diffDays(t.dueDate, today) : 999;
+  const dueScore = daysToDue <= 0 ? 1.0 : Math.max(0, 1 - daysToDue / 14);
+  const prioScore = { high: 1.0, medium: 0.6, low: 0.3, none: 0 }[t.priority] || 0;
+  const succScore = Math.min(1, countAllSuccessors(t.id) / 5);
+  const timeScore = ((t.nextAction && t.nextAction.startTime && t.nextAction.date === today) || (t.dueDate === today && t.dueTime)) ? 1.0 : 0;
+  return SCORE_W.due * dueScore + SCORE_W.priority * prioScore + SCORE_W.successor * succScore + SCORE_W.time * timeScore;
+}
+function scoreBreakdown(t) {
+  const today = todayStr();
+  const daysToDue = t.dueDate ? diffDays(t.dueDate, today) : 999;
+  const dueScore = daysToDue <= 0 ? 1.0 : Math.max(0, 1 - daysToDue / 14);
+  const prioScore = { high: 1.0, medium: 0.6, low: 0.3, none: 0 }[t.priority] || 0;
+  const succ = countAllSuccessors(t.id);
+  const timeScore = ((t.nextAction && t.nextAction.startTime && t.nextAction.date === today) || (t.dueDate === today && t.dueTime)) ? 1.0 : 0;
+  return `期日: ${(SCORE_W.due * dueScore).toFixed(0)} / 優先度: ${(SCORE_W.priority * prioScore).toFixed(0)} / 後続${succ}件: ${(SCORE_W.successor * Math.min(1, succ / 5)).toFixed(0)} / 時間指定: ${(SCORE_W.time * timeScore).toFixed(0)}`;
+}
+// 自動優先順（スコア降順 → 期日 → 優先度でタイブレーク）
+function autoSortToday(tasks) {
+  const prioRank = { high: 0, medium: 1, low: 2, none: 3 };
+  return tasks.slice().sort((a, b) => {
+    const sa = autoPriorityScore(a), sb = autoPriorityScore(b);
+    if (sb !== sa) return sb - sa;
+    const da = a.dueDate || "9999-12-31", db = b.dueDate || "9999-12-31";
+    if (da !== db) return da < db ? -1 : 1;
+    return prioRank[a.priority] - prioRank[b.priority];
+  });
+}
+
+/*========================================================
+  繰り返し（仕様3.6）: repeat = { unit, interval, byDay?, from }
+  unit: 'day'|'week'|'month'|'year' / from: 'due'（期日基準）|'completion'（完了日基準）
+========================================================*/
+const WEEKDAYS_SHORT = ["日", "月", "火", "水", "木", "金", "土"];
+
+function repeatLabel(rep) {
+  if (!rep || !rep.unit) return "";
+  if (rep.unit === "week" && rep.byDay && rep.byDay.length) {
+    return "毎週" + rep.byDay.map(d => WEEKDAYS_SHORT[d]).join("");
+  }
+  const uLabel = { day: "日", week: "週", month: "ヶ月", year: "年" }[rep.unit];
+  return rep.interval > 1 ? `${rep.interval}${uLabel}ごと` : `毎${rep.unit === "month" ? "月" : uLabel}`;
+}
+
+// 指定日以降で次に繰り返す日付を計算
+function nextRepeatDate(base, rep) {
+  if (!rep || !rep.unit) return base;
+  if (rep.unit === "day") return addDays(base, rep.interval);
+  if (rep.unit === "week") {
+    if (rep.byDay && rep.byDay.length) {
+      let d = addDays(base, 1);
+      for (let i = 0; i < 14; i++) {
+        if (rep.byDay.includes(parseDate(d).getDay())) return d;
+        d = addDays(d, 1);
+      }
+    }
+    return addDays(base, 7 * rep.interval);
+  }
+  if (rep.unit === "month") {
+    const dt = parseDate(base);
+    dt.setMonth(dt.getMonth() + rep.interval);
+    return fmtDate(dt);
+  }
+  if (rep.unit === "year") {
+    const dt = parseDate(base);
+    dt.setFullYear(dt.getFullYear() + rep.interval);
+    return fmtDate(dt);
+  }
+  return base;
+}
+
+// 繰り返しタスクの完了操作: 次回の日付へ全日付フィールドをまとめてずらし、未完了に戻す
+function rollTaskForward(t) {
+  const rep = t.repeat;
+  const today = todayStr();
+  const anchor = t.dueDate || t.startDate || (t.nextAction && t.nextAction.date) || today;
+  const base = rep.from === "completion" ? today : anchor;
+  const next = nextRepeatDate(base, rep);
+  const delta = diffDays(next, anchor); // due基準/completion基準どちらでも同じ式でズレ量を算出できる
+  if (t.dueDate) t.dueDate = addDays(t.dueDate, delta);
+  if (t.startDate) t.startDate = addDays(t.startDate, delta);
+  if (t.endDate) t.endDate = addDays(t.endDate, delta);
+  if (t.earliestStartDate) t.earliestStartDate = addDays(t.earliestStartDate, delta);
+  if (t.nextAction && t.nextAction.date) t.nextAction.date = addDays(t.nextAction.date, delta);
+  if (!t.dueDate && !t.startDate && !(t.nextAction && t.nextAction.date)) t.dueDate = next;
+  t.status = "active";
+  t.completedAt = null;
+  t.progress = 0;
+  touch(t);
+  // 新しい回として、サブタスクの完了状態もリセット
+  const resetKids = pid => {
+    for (const k of state.tasks.filter(x => x.parentTaskId === pid && !x.deletedAt)) {
+      k.status = "active"; k.completedAt = null; k.progress = 0;
+      touch(k);
+      resetKids(k.id);
+    }
+  };
+  resetKids(t.id);
+}
+
+/*========================================================
+  タスク操作
+========================================================*/
+function newTask(fields) {
+  const t = {
+    id: uid(), title: "", note: "", status: "active", progress: 0,
+    projectId: null, sectionId: null, parentTaskId: null,
+    priority: "none", tags: [], assignee: "", category: "",
+    startDate: null, endDate: null, dueDate: null, dueTime: null, earliestStartDate: null,
+    blockedBy: [], isMilestone: false, nextAction: null, repeat: null,
+    attachments: [], collapsed: false,
+    sortOrder: state.tasks.length,
+    createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null,
+    ...fields,
+  };
+  state.tasks.push(t);
+  return t;
+}
+function touch(t) { t.updatedAt = nowISO(); }
+
+// taskId が ancestorId の子孫かどうか
+function isDescendantOf(taskId, ancestorId) {
+  let cur = getTask(taskId);
+  const seen = new Set();
+  while (cur && cur.parentTaskId && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    if (cur.parentTaskId === ancestorId) return true;
+    cur = getTask(cur.parentTaskId);
+  }
+  return false;
+}
+function taskDepth(id) {
+  let d = 0, cur = getTask(id);
+  const seen = new Set();
+  while (cur && cur.parentTaskId && !seen.has(cur.id)) { seen.add(cur.id); d++; cur = getTask(cur.parentTaskId); }
+  return d;
+}
+function subtreeHeight(id) {
+  const kids = state.tasks.filter(x => x.parentTaskId === id && !x.deletedAt);
+  return kids.length ? 1 + Math.max(...kids.map(k => subtreeHeight(k.id))) : 0;
+}
+
+// D&Dでのタスク移動: mode = "into"(サブタスク化) | "before" | "after"(並び替え・親の付け替え)
+function handleTaskDrop(dragId, targetId, mode) {
+  if (!dragId || dragId === targetId) return;
+  const drag = getTask(dragId), target = getTask(targetId);
+  if (!drag || !target) return;
+  if (dragId === targetId || isDescendantOf(targetId, dragId)) {
+    toast("自分自身やそのサブタスクの下へは移動できません", "warn");
+    return;
+  }
+  if (mode === "into") {
+    if (target.parentTaskId === dragId) return;
+    if (taskDepth(targetId) + 1 + subtreeHeight(dragId) > 5) {
+      toast("サブタスクは5階層までです", "warn");
+      return;
+    }
+    drag.parentTaskId = targetId;
+    drag.projectId = target.projectId || null;
+    drag.sectionId = target.sectionId || null;
+    const sibs = state.tasks.filter(x => x.parentTaskId === targetId && !x.deletedAt && x.id !== dragId);
+    drag.sortOrder = sibs.length ? Math.max(...sibs.map(s => s.sortOrder)) + 1 : 0;
+    target.collapsed = false; // 入れた直後に見えるように
+    cascadeProject(dragId, drag.projectId);
+    touch(drag);
+    commit();
+    toast(`「${drag.title}」を「${target.title}」のサブタスクにしました`);
+  } else {
+    // before/after: targetの兄弟として挿入（親・プロジェクト・セクションを引き継ぐ）
+    drag.parentTaskId = target.parentTaskId || null;
+    drag.projectId = target.projectId || null;
+    drag.sectionId = target.sectionId || null;
+    cascadeProject(dragId, drag.projectId);
+    const sibs = state.tasks.filter(x =>
+      !x.deletedAt && x.id !== dragId &&
+      (x.parentTaskId || null) === (target.parentTaskId || null) &&
+      (x.projectId || null) === (target.projectId || null) &&
+      (x.sectionId || null) === (target.sectionId || null)
+    ).sort((a, b) => a.sortOrder - b.sortOrder);
+    const idx = sibs.findIndex(x => x.id === targetId);
+    sibs.splice(mode === "before" ? idx : idx + 1, 0, drag);
+    sibs.forEach((x, i) => { x.sortOrder = i; });
+    touch(drag);
+    commit();
+  }
+}
+
+// プロジェクト変更を全子孫タスクへ引き継ぐ
+function cascadeProject(taskId, projectId) {
+  for (const c of state.tasks.filter(x => x.parentTaskId === taskId && !x.deletedAt)) {
+    c.projectId = projectId;
+    c.sectionId = null;
+    touch(c);
+    cascadeProject(c.id, projectId);
+  }
+}
+
+function toggleComplete(id) {
+  const t = getTask(id);
+  if (!t) return;
+  if (t.status === "completed") {
+    t.status = "active"; t.completedAt = null;
+    if (t.progress === 100) t.progress = 0;
+    touch(t);
+    commit();
+    return;
+  }
+  if (t.repeat && t.repeat.unit) {
+    rollTaskForward(t);
+    commit();
+    const nextLabel = t.dueDate || t.startDate || (t.nextAction && t.nextAction.date);
+    toast(nextLabel ? `🔁 完了！次回は ${fmtDispW(nextLabel)} です` : "🔁 完了！次回の予定に更新しました");
+    return;
+  }
+  t.status = "completed"; t.completedAt = nowISO(); t.progress = 100;
+  // ブロックが外れた後続を通知
+  const freed = successorsOf(id).filter(s => !isBlocked(s));
+  if (freed.length) toast(`✔ 完了。後続 ${freed.map(f => "「" + f.title + "」").join("・")} が着手可能になりました`);
+  touch(t);
+  commit();
+}
+function deleteTask(id) {
+  const t = getTask(id);
+  if (!t) return;
+  // サブタスクも全階層まとめてゴミ箱へ
+  const stack = [id];
+  while (stack.length) {
+    const cur = getTask(stack.pop());
+    if (!cur || cur.deletedAt) continue;
+    cur.deletedAt = nowISO(); touch(cur);
+    for (const c of state.tasks.filter(x => x.parentTaskId === cur.id && !x.deletedAt)) stack.push(c.id);
+  }
+  commit();
+}
+function restoreTask(id) {
+  const t = getTask(id);
+  if (!t) return;
+  t.deletedAt = null; touch(t);
+  commit();
+}
+// 先送り: 期日・次回アクション・実施期間を n 日ずらす
+function postponeTask(id, n) {
+  const t = getTask(id);
+  if (!t) return;
+  if (t.dueDate) t.dueDate = addDays(t.dueDate, n);
+  if (t.nextAction && t.nextAction.date) t.nextAction.date = addDays(t.nextAction.date, n);
+  if (t.startDate && t.endDate) {
+    // 実施期間はまるごとシフト（期間内が「今日やる理由」になっている場合に有効）
+    if (t.startDate <= todayStr()) { t.startDate = addDays(todayStr(), n); }
+    if (t.endDate < t.startDate) t.endDate = t.startDate;
+  }
+  state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
+  touch(t);
+  commit();
+  toast(n === 1 ? "明日へ先送りしました" : n + "日先へ送りました");
+}
+/*========================================================
+  SIDEBAR & ROUTER
+========================================================*/
+function setView(v) {
+  if (v.type !== view.type || v.id !== view.id) ganttScrollMemo = null; // ビューが変わったら初期位置へ
+  view = v;
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("sidebar-bg").classList.remove("show");
+  render();
+}
+
+function smartCounts() {
+  const today = todayStr();
+  const act = activeTasks();
+  return {
+    today: todayTasks().length,
+    inbox: act.filter(t => !t.projectId && !t.parentTaskId).length,
+    overdue: act.filter(t => t.dueDate && t.dueDate < today).length,
+    trash: state.tasks.filter(t => t.deletedAt).length,
+  };
+}
+
+function renderSidebar() {
+  const c = smartCounts();
+  const items = [
+    { key: "today", icon: "🔥", label: "今日すること", cnt: c.today, v: { type: "today" } },
+    { key: "dashboard", icon: "📊", label: "ダッシュボード", cnt: null, v: { type: "dashboard" } },
+    { key: "gantt", icon: "📈", label: "ガント", cnt: null, v: { type: "gantt", id: "__all" } },
+    { key: "smart-today", icon: "📅", label: "Today", cnt: null, v: { type: "smart", smart: "today" } },
+    { key: "smart-week", icon: "🗓", label: "今週", cnt: null, v: { type: "smart", smart: "week" } },
+    { key: "inbox", icon: "📥", label: "Inbox", cnt: c.inbox, v: { type: "smart", smart: "inbox" } },
+    { key: "overdue", icon: "⚠️", label: "期限超過", cnt: c.overdue, alert: c.overdue > 0, v: { type: "smart", smart: "overdue" } },
+    { key: "all", icon: "📋", label: "すべて", cnt: null, v: { type: "smart", smart: "all" } },
+  ];
+  const nav = document.getElementById("nav-smart");
+  nav.innerHTML = items.map(it => {
+    const active = JSON.stringify(view) === JSON.stringify(it.v);
+    return `<div class="nav-item ${active ? "active" : ""}" data-nav="${it.key}" data-testid="nav-${it.key}">
+      <span>${it.icon}</span><span>${it.label}</span>
+      ${it.cnt !== null && it.cnt > 0 ? `<span class="cnt ${it.alert ? "alert" : ""}">${it.cnt}</span>` : ""}
+    </div>`;
+  }).join("");
+  nav.querySelectorAll(".nav-item").forEach((el, i) => {
+    el.onclick = () => setView(items[i].v);
+  });
+
+  // プロジェクト一覧
+  const projNav = document.getElementById("nav-projects");
+  const projs = state.projects.filter(p => p.status !== "archived");
+  projNav.innerHTML = projs.map(p => {
+    const act = activeTasks().filter(t => t.projectId === p.id);
+    const od = act.filter(t => t.dueDate && t.dueDate < todayStr()).length;
+    const active = (view.type === "project" || view.type === "gantt") && view.id === p.id;
+    return `<div class="nav-item ${active ? "active" : ""}" data-proj="${p.id}" data-testid="nav-proj-${esc(p.name)}">
+      <span class="proj-dot" style="background:${p.color}"></span>
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span>
+      ${od > 0 ? `<span class="cnt alert">${od}</span>` : act.length ? `<span class="cnt">${act.length}</span>` : ""}
+    </div>`;
+  }).join("") || `<div style="color:var(--text-faint);font-size:12px;padding:4px 10px">まだありません</div>`;
+  projNav.querySelectorAll(".nav-item").forEach(el => {
+    el.onclick = () => setView({ type: "project", id: el.dataset.proj });
+  });
+
+  // その他
+  const misc = document.getElementById("nav-misc");
+  const miscItems = [
+    { key: "memos", icon: "📝", label: "メモ", v: { type: "memos" }, cnt: state.memos.filter(m => !m.deletedAt).length || null },
+    { key: "trash", icon: "🗑", label: "ゴミ箱", v: { type: "trash" }, cnt: c.trash || null },
+    { key: "settings", icon: "⚙️", label: "設定・データ", v: { type: "settings" }, cnt: null },
+  ];
+  misc.innerHTML = miscItems.map(it => {
+    const active = view.type === it.v.type;
+    return `<div class="nav-item ${active ? "active" : ""}" data-testid="nav-${it.key}">
+      <span>${it.icon}</span><span>${it.label}</span>
+      ${it.cnt ? `<span class="cnt">${it.cnt}</span>` : ""}
+    </div>`;
+  }).join("");
+  misc.querySelectorAll(".nav-item").forEach((el, i) => {
+    el.onclick = () => setView(miscItems[i].v);
+  });
+}
+
+/* ---- メイン描画（ルーター） ---- */
+function render() {
+  renderMain();
+  updateQuickAddBar();
+  renderDetailPanel();
+}
+function renderMain() {
+  renderSidebar();
+  const title = document.getElementById("view-title");
+  const actions = document.getElementById("view-actions");
+  const body = document.getElementById("view-body");
+  actions.innerHTML = "";
+  body.innerHTML = "";
+
+  switch (view.type) {
+    case "today":     title.textContent = "🔥 今日すること（" + fmtDispW(todayStr()) + "）"; renderToday(body, actions); break;
+    case "dashboard": title.textContent = "📊 ダッシュボード"; renderDashboard(body); break;
+    case "smart":     renderSmart(body, actions, title); break;
+    case "project":   renderProjectView(body, actions, title); break;
+    case "gantt":     renderGanttView(body, actions, title); break;
+    case "memos":     title.textContent = "📝 メモ"; renderMemos(body, actions); break;
+    case "trash":     title.textContent = "🗑 ゴミ箱（30日保持）"; renderTrash(body); break;
+    case "settings":  title.textContent = "⚙️ 設定・データ"; renderSettings(body); break;
+    case "search":    title.textContent = "🔍 検索: " + view.q; renderSearch(body); break;
+    default: title.textContent = ""; break;
+  }
+}
+/*========================================================
+  TASK LIST: 行の生成・プロジェクトビュー・スマートリスト
+========================================================*/
+// タスク1行のDOMを生成
+function taskRowEl(t, opts = {}) {
+  const row = document.createElement("div");
+  const blocked = isBlocked(t), waiting = isWaiting(t);
+  row.className = "task-row prio-" + t.priority
+    + (t.status === "completed" ? " done" : "")
+    + (blocked || waiting ? " blocked" : "");
+  row.dataset.taskId = t.id;
+  row.setAttribute("data-testid", "task-row");
+
+  const badges = [];
+  const today = todayStr();
+  if (t.dueDate) {
+    const od = t.status === "active" && t.dueDate < today;
+    badges.push(`<span class="badge ${od ? "overdue" : "due"}">${t.isMilestone ? "◆" : "納期"} ${fmtDispW(t.dueDate)}${t.dueTime ? " " + t.dueTime : ""}${od ? " 超過" + diffDays(today, t.dueDate) + "日" : ""}</span>`);
+  }
+  if (t.startDate || t.endDate) badges.push(`<span class="badge">期間 ${fmtDisp(t.startDate)}〜${fmtDisp(t.endDate)}</span>`);
+  if (blocked) {
+    const names = (t.blockedBy || []).map(id => getTask(id)).filter(p => p && !p.deletedAt && p.status !== "completed").map(p => p.title);
+    badges.push(`<span class="badge blocked">🔒 ブロック中: ${esc(names.join(", "))}</span>`);
+  } else if (waiting) {
+    badges.push(`<span class="badge waiting">⏳ ${fmtDisp(t.earliestStartDate)}から着手可</span>`);
+  }
+  if (t.nextAction && t.nextAction.what) {
+    badges.push(`<span class="badge ready">▶ ${esc(t.nextAction.what)} ${t.nextAction.date ? fmtDisp(t.nextAction.date) : ""}${t.nextAction.startTime ? " " + t.nextAction.startTime : ""}</span>`);
+  }
+  if (t.repeat && t.repeat.unit) badges.push(`<span class="badge">🔁 ${esc(repeatLabel(t.repeat))}</span>`);
+  for (const tag of t.tags || []) badges.push(`<span class="badge tag">#${esc(tag)}</span>`);
+  const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt);
+  if (kids.length) {
+    const done = kids.filter(k => k.status === "completed").length;
+    badges.push(`<span class="badge">☑ ${done}/${kids.length}</span>`);
+  }
+  if ((t.attachments || []).length) badges.push(`<span class="badge">📎 ${t.attachments.length}</span>`);
+  if (opts.showProject && t.projectId) {
+    const p = getProject(t.projectId);
+    if (p) badges.push(`<span class="badge" style="color:${p.color}">${esc(p.name)}</span>`);
+  }
+
+  // ツリー表示時: サブタスクの折りたたみトグル（子なしはスペーサーで整列）
+  const tw = opts.tree
+    ? (kids.length
+      ? `<button class="tw ${t.collapsed ? "collapsed" : ""}" data-testid="tree-toggle" title="サブタスクを開閉">▼</button>`
+      : `<span class="tw-sp"></span>`)
+    : "";
+
+  row.innerHTML = `${tw}
+    <button class="task-check p-${t.priority} ${t.status === "completed" ? "checked" : ""}" data-testid="task-check" aria-label="完了">✓</button>
+    <div class="t-main">
+      <div class="t-title">${esc(t.title)}</div>
+      ${badges.length ? `<div class="t-badges">${badges.join("")}</div>` : ""}
+    </div>
+    ${t.progress > 0 && t.status === "active" ? `<div class="t-prog">${t.progress}%</div>` : ""}
+  `;
+  row.querySelector(".task-check").onclick = (e) => { e.stopPropagation(); toggleComplete(t.id); };
+  const twBtn = row.querySelector("[data-testid=tree-toggle]");
+  if (twBtn) twBtn.onclick = e => { e.stopPropagation(); t.collapsed = !t.collapsed; touch(t); commit(); };
+
+  // D&D: 並び替え＆サブタスク化（上端=前へ / 下端=後ろへ / 中央=サブタスクに）
+  if (opts.dnd) {
+    row.draggable = true;
+    const clearMarks = () => row.classList.remove("drop-before", "drop-after", "drop-into");
+    row.addEventListener("dragstart", e => {
+      e.stopPropagation();
+      e.dataTransfer.setData("text/plain", t.id);
+      e.dataTransfer.effectAllowed = "move";
+    });
+    row.addEventListener("dragover", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = row.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      clearMarks();
+      if (y < rect.height * 0.28) row.classList.add("drop-before");
+      else if (y > rect.height * 0.72) row.classList.add("drop-after");
+      else row.classList.add("drop-into");
+    });
+    row.addEventListener("dragleave", clearMarks);
+    row.addEventListener("drop", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const mode = row.classList.contains("drop-before") ? "before"
+        : row.classList.contains("drop-after") ? "after" : "into";
+      clearMarks();
+      handleTaskDrop(e.dataTransfer.getData("text/plain"), t.id, mode);
+    });
+  }
+
+  row.onclick = () => openTaskModal(t.id);
+  return row;
+}
+
+// タスクとサブタスクを再帰的に描画（一覧共通）
+function appendTaskTree(container, t, depth = 0, opts = {}) {
+  container.appendChild(taskRowEl(t, { ...opts, tree: true }));
+  appendTaskKids(container, t, depth, opts);
+}
+function appendTaskKids(container, t, depth = 0, opts = {}) {
+  if (t.collapsed) return;
+  const kids = state.tasks
+    .filter(x => x.parentTaskId === t.id && !x.deletedAt)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  if (kids.length && depth < 5) {
+    const sub = document.createElement("div");
+    sub.className = "subtasks";
+    for (const k of kids) appendTaskTree(sub, k, depth + 1, opts);
+    container.appendChild(sub);
+  }
+}
+// 完了タスクの下部セクション（TickTick風）: 開閉状態はビューごと・セッション内
+const doneOpen = {};
+function renderDoneSection(body, doneTasks, key, opts = {}) {
+  if (!doneTasks.length) return;
+  const open = !!doneOpen[key];
+  const head = document.createElement("div");
+  head.className = "sec-head" + (open ? "" : " collapsed");
+  head.setAttribute("data-testid", "done-head");
+  head.innerHTML = `<span class="tri">▼</span> 完了
+    <span style="font-size:11px;background:var(--bg3);border-radius:10px;padding:1px 8px;color:var(--text-dim)">${doneTasks.length}</span>`;
+  head.onclick = () => { doneOpen[key] = !open; render(); };
+  body.appendChild(head);
+  if (open) for (const t of doneTasks) appendTaskTree(body, t, 0, opts);
+}
+
+// 祖先が同じ集合に含まれるタスクを除外（親の下にツリー表示されるため重複を防ぐ）
+function excludeNested(tasks) {
+  const inSet = new Set(tasks.map(t => t.id));
+  return tasks.filter(t => {
+    let p = t.parentTaskId;
+    while (p) {
+      if (inSet.has(p)) return false;
+      p = getTask(p)?.parentTaskId;
+    }
+    return true;
+  });
+}
+
+/* ---- プロジェクトビュー ---- */
+function renderProjectView(body, actions, title) {
+  const p = getProject(view.id);
+  if (!p) { setView({ type: "today" }); return; }
+  title.innerHTML = `<span class="proj-dot" style="background:${p.color};display:inline-block;margin-right:6px"></span>${esc(p.name)}`;
+
+  actions.innerHTML = `
+    <div class="btn-group">
+      <button class="btn on" data-testid="view-list-btn">リスト</button>
+      <button class="btn" data-testid="view-gantt-btn">ガント</button>
+    </div>
+    <button class="btn small" data-testid="add-section-btn" style="margin-left:8px">＋セクション</button>
+    <button class="btn small" data-testid="edit-project-btn" style="margin-left:4px">✎</button>`;
+  actions.querySelector("[data-testid=view-gantt-btn]").onclick = () => setView({ type: "gantt", id: p.id });
+  actions.querySelector("[data-testid=add-section-btn]").onclick = () => {
+    openPrompt("セクション名", "", name => {
+      if (!name) return;
+      state.sections.push({ id: uid(), projectId: p.id, name, collapsed: false, sortOrder: state.sections.length });
+      commit();
+    });
+  };
+  actions.querySelector("[data-testid=edit-project-btn]").onclick = () => openProjectModal(p.id);
+
+  const tasks = liveTasks().filter(t => t.projectId === p.id && !t.parentTaskId).sort((a, b) => a.sortOrder - b.sortOrder);
+  // 完了したトップレベルタスクは下部の「完了」セクションへ（TickTick風）
+  const visible = tasks.filter(t => t.status !== "completed");
+  const doneTasks = tasks.filter(t => t.status === "completed");
+
+  const secs = state.sections.filter(s => s.projectId === p.id).sort((a, b) => a.sortOrder - b.sortOrder);
+  const noSec = visible.filter(t => !t.sectionId || !secs.find(s => s.id === t.sectionId));
+  for (const t of noSec) appendTaskTree(body, t, 0, { dnd: true });
+
+  for (const s of secs) {
+    const head = document.createElement("div");
+    head.className = "sec-head" + (s.collapsed ? " collapsed" : "");
+    head.innerHTML = `<span class="tri">▼</span> ${esc(s.name)}`;
+    head.onclick = () => { s.collapsed = !s.collapsed; commit(); };
+    body.appendChild(head);
+    if (!s.collapsed) {
+      const inSec = visible.filter(t => t.sectionId === s.id);
+      for (const t of inSec) appendTaskTree(body, t, 0, { dnd: true });
+      if (!inSec.length) {
+        const e = document.createElement("div");
+        e.style.cssText = "color:var(--text-faint);font-size:12px;padding:2px 10px";
+        e.textContent = "（空）";
+        body.appendChild(e);
+      }
+    }
+  }
+  if (!visible.length && !secs.length && !doneTasks.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="empty-msg">タスクがありません。上の欄から追加してください。</div>`);
+  }
+  renderDoneSection(body, doneTasks, "project:" + p.id);
+}
+
+/* ---- スマートリスト ---- */
+function renderSmart(body, actions, title) {
+  const today = todayStr();
+  const defs = {
+    today:   { label: "📅 Today", filter: t => hasTodayReason(t) || (t.nextAction && t.nextAction.date === today) },
+    week:    { label: "🗓 今週", filter: t => {
+      const end = addDays(today, 7 - parseDate(today).getDay() - (state.settings.weekStart === 1 ? -1 : 0) % 7);
+      const wEnd = addDays(today, 6);
+      return (t.dueDate && t.dueDate <= wEnd) || (t.startDate && t.startDate <= wEnd && (!t.endDate || t.endDate >= today)) || (t.nextAction && t.nextAction.date && t.nextAction.date <= wEnd);
+    } },
+    inbox:   { label: "📥 Inbox", filter: t => !t.projectId && !t.parentTaskId },
+    overdue: { label: "⚠️ 期限超過", filter: t => t.dueDate && t.dueDate < today },
+    all:     { label: "📋 すべてのタスク", filter: () => true },
+  };
+  const def = defs[view.smart] || defs.all;
+  title.textContent = def.label;
+
+  let tasks = activeTasks().filter(def.filter);
+  let doneTasks = [];
+  if (view.smart === "all") {
+    const all = excludeNested(liveTasks());
+    tasks = all.filter(t => t.status !== "completed");
+    doneTasks = all.filter(t => t.status === "completed");
+  } else {
+    tasks = excludeNested(tasks); // 親が同じ一覧にいる場合は親の下にツリー表示
+  }
+  tasks.sort((a, b) => (a.dueDate || "9999") < (b.dueDate || "9999") ? -1 : 1);
+  const isG = ganttToggle(actions, "smart:" + (view.smart || "all"));
+  if (isG) {
+    drawGantt(body, ganttRowsFor(tasks.concat(doneTasks)));
+    return;
+  }
+  if (!tasks.length && !doneTasks.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="empty-msg">タスクがありません 🎉</div>`);
+    return;
+  }
+  for (const t of tasks) appendTaskTree(body, t, 0, { showProject: true, dnd: true });
+  renderDoneSection(body, doneTasks, "smart:" + (view.smart || "all"), { showProject: true });
+}
+
+/* ---- ゴミ箱 ---- */
+function renderTrash(body) {
+  const trashed = state.tasks.filter(t => t.deletedAt);
+  if (!trashed.length) {
+    body.innerHTML = `<div class="empty-msg">ゴミ箱は空です</div>`;
+    return;
+  }
+  for (const t of trashed) {
+    const row = document.createElement("div");
+    row.className = "task-row";
+    row.innerHTML = `<div class="t-main"><div class="t-title" style="color:var(--text-dim)">${esc(t.title)}</div>
+      <div class="t-badges"><span class="badge">削除: ${t.deletedAt.slice(0, 10)}</span></div></div>
+      <button class="btn small" data-testid="restore-btn">復元</button>`;
+    row.querySelector("button").onclick = e => { e.stopPropagation(); restoreTask(t.id); toast("復元しました"); };
+    body.appendChild(row);
+  }
+}
+
+/* ---- 検索 ---- */
+function renderSearch(body) {
+  const q = (view.q || "").toLowerCase();
+  if (!q) { body.innerHTML = `<div class="empty-msg">検索語を入力してください</div>`; return; }
+  const tasks = liveTasks().filter(t =>
+    t.title.toLowerCase().includes(q) || (t.note || "").toLowerCase().includes(q) ||
+    (t.tags || []).some(tag => tag.toLowerCase().includes(q)));
+  const memos = state.memos.filter(m => !m.deletedAt && (m.title.toLowerCase().includes(q) || (m.body || "").toLowerCase().includes(q)));
+  const projs = state.projects.filter(p => p.name.toLowerCase().includes(q));
+
+  if (projs.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="sec-head">プロジェクト</div>`);
+    for (const p of projs) {
+      const el = document.createElement("div");
+      el.className = "task-row";
+      el.innerHTML = `<span class="proj-dot" style="background:${p.color};margin-top:5px"></span><div class="t-main">${esc(p.name)}</div>`;
+      el.onclick = () => setView({ type: "project", id: p.id });
+      body.appendChild(el);
+    }
+  }
+  body.insertAdjacentHTML("beforeend", `<div class="sec-head">タスク（${tasks.length}）</div>`);
+  for (const t of tasks) body.appendChild(taskRowEl(t, { showProject: true }));
+  if (memos.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="sec-head">メモ（${memos.length}）</div>`);
+    for (const m of memos) {
+      const el = document.createElement("div");
+      el.className = "task-row";
+      el.innerHTML = `<div class="t-main"><div class="t-title">📝 ${esc(m.title)}</div></div>`;
+      el.onclick = () => { editingMemoId = m.id; setView({ type: "memos" }); };
+      body.appendChild(el);
+    }
+  }
+  if (!tasks.length && !memos.length && !projs.length) {
+    body.innerHTML = `<div class="empty-msg">「${esc(view.q)}」に一致する項目はありません</div>`;
+  }
+}
+/*========================================================
+  MODALS: タスク詳細・プロジェクト・汎用プロンプト
+========================================================*/
+function closeModal() {
+  document.getElementById("modal-root").innerHTML = "";
+}
+function modalShell(html) {
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `<div class="modal-bg" data-testid="modal-bg"><div class="modal" data-testid="modal">${html}</div></div>`;
+  root.querySelector(".modal-bg").addEventListener("mousedown", e => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+  return root.querySelector(".modal");
+}
+
+function openPrompt(label, defVal, cb) {
+  const m = modalShell(`
+    <h2>${esc(label)}</h2>
+    <input id="prompt-input" data-testid="prompt-input" value="${esc(defVal)}" style="width:100%">
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button class="btn" data-testid="prompt-cancel">キャンセル</button>
+      <button class="btn primary" data-testid="prompt-ok">OK</button>
+    </div>`);
+  const input = m.querySelector("#prompt-input");
+  input.focus(); input.select();
+  const ok = () => { const v = input.value.trim(); closeModal(); cb(v); };
+  m.querySelector("[data-testid=prompt-ok]").onclick = ok;
+  m.querySelector("[data-testid=prompt-cancel]").onclick = closeModal;
+  input.onkeydown = e => { if (e.key === "Enter" && !isIMEEnter(e)) ok(); if (e.key === "Escape") closeModal(); };
+}
+
+/* ---- タスク詳細: 右サイドパネル（TickTick風・自動保存） ---- */
+function openTaskModal(taskId) { // 呼び出し箇所互換のため関数名は維持
+  if (taskId !== detailTaskId) noteEditing = false;
+  detailTaskId = taskId;
+  renderDetailPanel();
+}
+function closeDetail() {
+  detailTaskId = null;
+  renderDetailPanel();
+}
+
+function renderDetailPanel() {
+  const panel = document.getElementById("detail-panel");
+  const t = detailTaskId ? getTask(detailTaskId) : null;
+  if (!t || t.deletedAt) {
+    detailTaskId = null;
+    panel.classList.remove("open");
+    panel.innerHTML = "";
+    return;
+  }
+  panel.classList.add("open");
+  const done = t.status === "completed";
+  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived")
+    .map(p => `<option value="${p.id}" ${t.projectId === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  const secOpts = `<option value="">（なし）</option>` + state.sections.filter(s => s.projectId === t.projectId)
+    .map(s => `<option value="${s.id}" ${t.sectionId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+  const depCandidates = liveTasks().filter(x =>
+    x.id !== t.id && !(t.blockedBy || []).includes(x.id) && !wouldCycle(t.id, x.id));
+  const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort((a, b) => a.sortOrder - b.sortOrder);
+  const na = t.nextAction || {};
+  const statusLine = done ? "✅ 完了" : isBlocked(t) ? "🔒 ブロック中" : isWaiting(t) ? `⏳ ${fmtDisp(t.earliestStartDate)}から着手可` : "▶ 着手可能";
+
+  // 詳細設定を折りたたみ中は、設定済み項目をチップで要約表示
+  const liveDeps = (t.blockedBy || []).filter(id => { const p = getTask(id); return p && !p.deletedAt; }).length;
+  const chips = [];
+  if (t.startDate || t.endDate) chips.push("期間 " + fmtDisp(t.startDate) + "〜" + fmtDisp(t.endDate));
+  if (t.dueDate) chips.push((t.isMilestone ? "◆ " : "納期 ") + fmtDispW(t.dueDate) + (t.dueTime ? " " + t.dueTime : ""));
+  if (t.earliestStartDate) chips.push("⏳ " + fmtDisp(t.earliestStartDate) + "から");
+  if (t.progress > 0) chips.push("進捗 " + t.progress + "%");
+  if (liveDeps) chips.push("🔒 依存" + liveDeps + "件");
+  if (t.nextAction && (t.nextAction.what || t.nextAction.date)) chips.push("▶ " + (t.nextAction.what || fmtDisp(t.nextAction.date)));
+  if (t.repeat && t.repeat.unit) chips.push("🔁 " + repeatLabel(t.repeat));
+  for (const tag of t.tags || []) chips.push("#" + tag);
+  const chipsHtml = chips.length
+    ? chips.map(c => `<span class="badge">${esc(c)}</span>`).join("")
+    : `<span class="badge">⚙ 日付・プロジェクト等を設定...</span>`;
+
+  panel.innerHTML = `
+    <div class="dp-head">
+      <button class="task-check p-${t.priority} ${done ? "checked" : ""}" data-testid="tm-check" title="完了切替">✓</button>
+      <div class="dp-flags">
+        ${["high", "medium", "low"].map(p => `<button class="flag-btn ${t.priority === p ? "sel" : ""}" data-p="${p}" data-testid="tm-prio-${p}" style="color:${PRIO_COLOR[p]}" title="優先度: ${PRIO_LABEL[p]}">⚑</button>`).join("")}
+        <button class="flag-btn ${t.priority === "none" ? "sel" : ""}" data-p="none" data-testid="tm-prio-none" style="color:var(--text-dim)" title="優先度: なし">⚐</button>
+      </div>
+      <span class="dp-status">${statusLine}</span>
+      <button class="btn small" data-testid="tm-close" style="margin-left:auto" title="閉じる（Esc）">✕</button>
+    </div>
+    ${t.parentTaskId && getTask(t.parentTaskId) && !getTask(t.parentTaskId).deletedAt
+      ? `<div class="dp-crumb" data-testid="dp-parent">↑ 親タスク: ${esc(getTask(t.parentTaskId).title)}</div>` : ""}
+    <input id="tm-title" data-testid="tm-title" class="dp-title" value="${esc(t.title)}" placeholder="タイトル">
+    ${(!noteEditing && (t.note || "").trim())
+      ? `<div id="tm-note-view" data-testid="tm-note-view" style="margin:10px 0 2px" title="クリックで編集">${renderMarkdown(t.note, { interactive: true })}</div>`
+      : `<textarea id="tm-note" data-testid="tm-note" placeholder="メモ（詳細）
+チェックリスト: - [ ] 項目 / 見出し: # 見出し / 太字: **太字**" style="margin:10px 0 2px">${esc(t.note || "")}</textarea>`}
+    ${!detailExpanded ? `
+    <div class="dp-chips" data-testid="tm-summary" title="クリックで詳細設定を開く">${chipsHtml}</div>` : `
+    <div class="f-row">
+      <div class="f-col"><label>プロジェクト</label><select id="tm-project" data-testid="tm-project">${projOpts}</select></div>
+      <div class="f-col"><label>セクション</label><select id="tm-section" data-testid="tm-section">${secOpts}</select></div>
+    </div>
+    <div class="f-row">
+      <div class="f-col"><label>開始日</label><input type="date" id="tm-start" data-testid="tm-start" value="${t.startDate || ""}"></div>
+      <div class="f-col"><label>終了日</label><input type="date" id="tm-end" data-testid="tm-end" value="${t.endDate || ""}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f-col"><label>納期（◆）・時刻</label>
+        <div style="display:flex;gap:6px">
+          <input type="date" id="tm-due" data-testid="tm-due" value="${t.dueDate || ""}" style="flex:1.5;min-width:0">
+          <input type="time" id="tm-due-time" data-testid="tm-due-time" value="${t.dueTime || ""}" style="flex:1;min-width:0" title="時刻（任意）">
+        </div>
+      </div>
+      <div class="f-col"><label>開始可能日</label><input type="date" id="tm-esd" data-testid="tm-esd" value="${t.earliestStartDate || ""}"></div>
+    </div>
+    <div class="f-row">
+      <div class="f-col"><label>進捗 <span id="tm-prog-val">${t.progress}%</span></label>
+        <input type="range" id="tm-progress" data-testid="tm-progress" min="0" max="100" step="5" value="${t.progress}"></div>
+      <div class="f-col" style="justify-content:flex-end">
+        <label style="font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;white-space:nowrap;padding-bottom:6px">
+          <input type="checkbox" id="tm-milestone" ${t.isMilestone ? "checked" : ""}> ◆ マイルストーン</label>
+      </div>
+    </div>
+    <div class="f-row"><div class="f-col">
+      <label>依存タスク（完了するまで着手不可）</label>
+      <div id="tm-deps" data-testid="tm-deps">${(t.blockedBy || []).map(id => {
+        const p = getTask(id);
+        return p && !p.deletedAt ? `<span class="dep-chip" data-dep="${id}">🔒 ${esc(p.title)} <button data-testid="dep-remove">✕</button></span>` : "";
+      }).join("")}</div>
+      <select id="tm-dep-add" data-testid="tm-dep-add">
+        <option value="">＋依存タスクを追加...</option>
+        ${depCandidates.map(x => `<option value="${x.id}">${esc(x.title)}${x.projectId ? "（" + esc(getProject(x.projectId)?.name || "") + "）" : ""}</option>`).join("")}
+      </select>
+    </div></div>
+    <div class="f-row"><div class="f-col">
+      <label>次回アクション（いつ・何を・何時〜何時）</label>
+      <input id="tm-na-what" data-testid="tm-na-what" placeholder="何をするか" value="${esc(na.what || "")}">
+      <div style="display:flex;gap:6px;margin-top:4px">
+        <input type="date" id="tm-na-date" data-testid="tm-na-date" value="${na.date || ""}" style="flex:1.4;min-width:0">
+        <input type="time" id="tm-na-start" data-testid="tm-na-start" value="${na.startTime || ""}" style="flex:1;min-width:0">
+        <input type="time" id="tm-na-end" data-testid="tm-na-end" value="${na.endTime || ""}" style="flex:1;min-width:0">
+      </div>
+    </div></div>
+    <div class="f-row"><div class="f-col">
+      <label>タグ（カンマ区切り）</label><input id="tm-tags" data-testid="tm-tags" value="${esc((t.tags || []).join(", "))}">
+    </div></div>
+    <div class="f-row"><div class="f-col">
+      <label>繰り返し</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <select id="tm-repeat-unit" data-testid="tm-repeat-unit">
+          <option value="">なし</option>
+          ${["day", "week", "month", "year"].map(u => `<option value="${u}" ${t.repeat?.unit === u ? "selected" : ""}>${{ day: "日", week: "週", month: "ヶ月", year: "年" }[u]}ごと</option>`).join("")}
+        </select>
+        <input type="number" id="tm-repeat-interval" data-testid="tm-repeat-interval" min="1" value="${t.repeat?.interval || 1}" style="width:56px">
+        <select id="tm-repeat-from" data-testid="tm-repeat-from">
+          <option value="due" ${!t.repeat || t.repeat.from !== "completion" ? "selected" : ""}>期日基準</option>
+          <option value="completion" ${t.repeat?.from === "completion" ? "selected" : ""}>完了日基準</option>
+        </select>
+      </div>
+      <div id="tm-repeat-days" style="display:${t.repeat?.unit === "week" ? "flex" : "none"};gap:8px;margin-top:6px;flex-wrap:wrap">
+        ${WEEKDAYS_SHORT.map((w, i) => `<label style="font-size:11px;display:flex;gap:3px;align-items:center"><input type="checkbox" data-testid="tm-repeat-day-${i}" value="${i}" ${t.repeat?.byDay?.includes(i) ? "checked" : ""}>${w}</label>`).join("")}
+      </div>
+    </div></div>`}
+    <div class="f-row"><div class="f-col">
+      <label>添付（画像はCtrl+Vで貼り付けOK・自動圧縮）</label>
+      <div id="tm-atts" data-testid="tm-atts"></div>
+      <input type="file" id="tm-att-file" data-testid="tm-att-file" multiple style="display:none">
+      <button class="btn small" data-testid="tm-att-btn" style="align-self:flex-start">📎 ファイルを添付</button>
+    </div></div>
+    <div class="f-row"><div class="f-col">
+      <label>サブタスク（${kids.filter(k => k.status === "completed").length}/${kids.length}）※さらに階層化は子を開いて追加</label>
+      <div id="tm-subtasks">${(function subTree(pid, depth) {
+        return state.tasks.filter(x => x.parentTaskId === pid && !x.deletedAt)
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map(k => `
+        <div class="subtask-line" data-sub="${k.id}" style="margin-left:${depth * 16}px">
+          <button class="task-check p-${k.priority} ${k.status === "completed" ? "checked" : ""}" data-testid="sub-check" style="width:15px;height:15px;min-width:15px;font-size:9px">✓</button>
+          <span class="st-title ${k.status === "completed" ? "done" : ""}" data-testid="sub-title">${esc(k.title)}</span>
+        </div>` + (depth < 4 ? subTree(k.id, depth + 1) : "")).join("");
+      })(t.id, 0)}</div>
+      <input id="tm-sub-new" data-testid="tm-sub-new" placeholder="サブタスクを追加（Enter）">
+    </div></div>
+    <div class="dp-foot">
+      <span class="dp-proj">${t.projectId && getProject(t.projectId)
+        ? `<span class="proj-dot" style="background:${getProject(t.projectId).color};display:inline-block;margin-right:5px"></span>${esc(getProject(t.projectId).name)}`
+        : "📥 受信トレイ"}</span>
+      <span style="flex:1"></span>
+      <button class="btn small ${done ? "" : "primary"}" data-testid="tm-complete">${done ? "↩ 戻す" : "✓ 完了"}</button>
+      <button class="btn small danger" data-testid="tm-delete">削除</button>
+      <button class="btn small ${detailExpanded ? "primary" : ""}" data-testid="tm-more" title="詳細設定（プロジェクト・日付・依存など）を${detailExpanded ? "隠す" : "表示"}">⋯</button>
+    </div>`;
+
+  const $ = sel => panel.querySelector(sel);
+  // 変更を適用して保存・全体再描画（パネルも作り直される＝表示が常に最新）
+  const apply = fn => { fn(); touch(t); commit(); };
+
+  $("[data-testid=tm-close]").onclick = closeDetail;
+  $("[data-testid=tm-check]").onclick = () => toggleComplete(t.id);
+  $("[data-testid=tm-complete]").onclick = () => toggleComplete(t.id);
+  $("[data-testid=tm-delete]").onclick = () => {
+    if (!confirm(`「${t.title}」を削除しますか？（30日間はゴミ箱から復元可）`)) return;
+    detailTaskId = null;
+    deleteTask(t.id);
+    toast("ゴミ箱に移動しました");
+  };
+  panel.querySelectorAll(".dp-flags .flag-btn").forEach(b => {
+    b.onclick = () => apply(() => { t.priority = b.dataset.p; });
+  });
+
+  // 親タスクへのパンくず
+  const crumb = $("[data-testid=dp-parent]");
+  if (crumb) crumb.onclick = () => openTaskModal(t.parentTaskId);
+
+  // タイトル・メモ: 入力中はフォーカスを保つため、メイン画面のみ更新（パネルは触らない）
+  let typeTimer = null;
+  const liveSave = () => { touch(t); save(); renderMain(); };
+  $("#tm-title").addEventListener("input", e => {
+    const v = e.target.value.trim();
+    if (!v) return; // 空タイトルは保存しない
+    t.title = v;
+    clearTimeout(typeTimer); typeTimer = setTimeout(liveSave, 400);
+  });
+
+  // メモ欄（編集モード）: 高さは画面の1/3を初期値に、内容に応じて自動拡張
+  const noteTa = $("#tm-note");
+  if (noteTa) {
+    const grow = () => {
+      noteTa.style.height = "auto";
+      noteTa.style.height = Math.max(Math.round(window.innerHeight / 3), noteTa.scrollHeight + 4) + "px";
+    };
+    grow();
+    noteTa.addEventListener("input", () => {
+      grow();
+      t.note = noteTa.value;
+      clearTimeout(typeTimer); typeTimer = setTimeout(liveSave, 400);
+    });
+    noteTa.addEventListener("blur", () => {
+      t.note = noteTa.value; touch(t); save(); renderMain();
+      // 内容があれば表示モード（チェックリスト操作可能）へ。クリック先の操作を妨げないよう少し遅らせる
+      setTimeout(() => {
+        if (detailTaskId === t.id && document.activeElement !== noteTa && (t.note || "").trim()) {
+          noteEditing = false;
+          renderDetailPanel();
+        }
+      }, 200);
+    });
+    if (noteEditing) noteTa.focus();
+  }
+  // メモ欄（表示モード）: チェックボックスをクリックで切替、本文クリックで編集へ
+  const noteView = $("#tm-note-view");
+  if (noteView) {
+    noteView.querySelectorAll("input[data-mdline]").forEach(cb => {
+      cb.onchange = () => {
+        const lines = (t.note || "").split("\n");
+        const i = +cb.dataset.mdline;
+        if (lines[i] === undefined) return;
+        lines[i] = cb.checked ? lines[i].replace(/\[ \]/, "[x]") : lines[i].replace(/\[[xX]\]/, "[ ]");
+        apply(() => { t.note = lines.join("\n"); });
+      };
+    });
+    noteView.addEventListener("click", e => {
+      if (e.target.closest("input") || e.target.closest("a")) return;
+      noteEditing = true;
+      renderDetailPanel();
+    });
+  }
+
+  // 添付ファイル
+  const attBox = $("#tm-atts");
+  for (const a of (t.attachments || [])) {
+    const item = document.createElement("div");
+    item.className = "att-item";
+    item.setAttribute("data-testid", "att-item");
+    const isImg = (a.type || "").startsWith("image/");
+    item.innerHTML = `${isImg ? `<img class="att-thumb" alt="${esc(a.name)}">` : `<span style="font-size:22px">📄</span>`}
+      <a href="#" class="att-name">${esc(a.name)}</a>
+      <span class="att-size">${a.size >= 1048576 ? (a.size / 1048576).toFixed(1) + "MB" : Math.max(1, Math.round(a.size / 1024)) + "KB"}</span>
+      <button class="btn small danger" data-testid="att-del" title="添付を削除">✕</button>`;
+    if (isImg) fileGet(a.id).then(b => {
+      const img = item.querySelector("img");
+      if (b && img) img.src = URL.createObjectURL(b);
+    }).catch(() => {});
+    const openOrDl = async e => {
+      e.preventDefault();
+      const b = await fileGet(a.id);
+      if (!b) { toast("ファイルの実体が見つかりません", "error"); return; }
+      const u = URL.createObjectURL(b);
+      if (isImg) {
+        modalShell(`<img src="${u}" alt="${esc(a.name)}" style="max-width:100%;max-height:75vh;display:block;margin:0 auto;border-radius:6px">
+          <div class="modal-foot"><a class="btn" href="${u}" download="${esc(a.name)}">⬇ 保存</a><span class="spacer"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
+      } else {
+        const dl = document.createElement("a");
+        dl.href = u; dl.download = a.name; dl.click();
+      }
+    };
+    item.querySelector(".att-name").onclick = openOrDl;
+    const th = item.querySelector(".att-thumb");
+    if (th) th.onclick = openOrDl;
+    item.querySelector("[data-testid=att-del]").onclick = () => {
+      fileDelete(a.id).catch(() => {});
+      apply(() => { t.attachments = (t.attachments || []).filter(x => x.id !== a.id); });
+    };
+    attBox.appendChild(item);
+  }
+  $("[data-testid=tm-att-btn]").onclick = () => $("#tm-att-file").click();
+  $("#tm-att-file").onchange = e => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    attachFiles(t, files);
+  };
+
+  // 詳細設定の開閉（⋯ボタン / 要約チップのクリック）
+  $("[data-testid=tm-more]").onclick = () => { detailExpanded = !detailExpanded; renderDetailPanel(); };
+  const summary = $("[data-testid=tm-summary]");
+  if (summary) summary.onclick = () => { detailExpanded = true; renderDetailPanel(); };
+
+  // ---- 以下は詳細設定（展開時のみDOMに存在） ----
+  if (detailExpanded) {
+  $("#tm-project").onchange = e => apply(() => {
+    t.projectId = e.target.value || null;
+    t.sectionId = null;
+    cascadeProject(t.id, t.projectId); // サブタスクにも引き継ぐ
+  });
+  $("#tm-section").onchange = e => apply(() => { t.sectionId = e.target.value || null; });
+  // 日付系: iOSはカレンダー操作中にもchangeが発火する。ここでパネルを再描画すると
+  // 入力欄ごと作り直されてカレンダーが閉じてしまうため、「即保存＋メイン画面のみ更新」とし、
+  // パネルの再描画はフォーカスが外れてから行う
+  const liteApply = fn => { fn(); touch(t); save(); renderMain(); };
+  const refreshOnBlur = el => el.addEventListener("blur", () => {
+    setTimeout(() => { if (detailTaskId === t.id && !panel.contains(document.activeElement)) renderDetailPanel(); }, 100);
+  });
+  $("#tm-start").onchange = e => {
+    const v = e.target.value || null;
+    liteApply(() => {
+      t.startDate = v;
+      if (v && t.endDate && t.endDate < v) t.endDate = v; // 期間の前後を自動補正
+    });
+    if (v) {
+      const conflict = (t.blockedBy || []).map(getTask).filter(p => p && !p.deletedAt && p.status !== "completed" && p.endDate && p.endDate > v);
+      if (conflict.length) toast(`⚠ 開始日が先行タスク「${conflict[0].title}」の終了日より前です`, "warn");
+    }
+  };
+  $("#tm-end").onchange = e => {
+    const v = e.target.value || null;
+    liteApply(() => {
+      t.endDate = v;
+      if (v && t.startDate && v < t.startDate) t.startDate = v;
+    });
+  };
+  $("#tm-due").onchange = e => liteApply(() => { t.dueDate = e.target.value || null; });
+  $("#tm-due-time").onchange = e => liteApply(() => { t.dueTime = e.target.value || null; });
+  $("#tm-esd").onchange = e => liteApply(() => { t.earliestStartDate = e.target.value || null; });
+  for (const id of ["tm-start", "tm-end", "tm-due", "tm-due-time", "tm-esd"]) refreshOnBlur($("#" + id));
+  $("#tm-progress").oninput = () => { $("#tm-prog-val").textContent = $("#tm-progress").value + "%"; };
+  $("#tm-progress").onchange = e => apply(() => { t.progress = Number(e.target.value); });
+  $("#tm-milestone").onchange = e => apply(() => { t.isMilestone = e.target.checked; });
+  $("#tm-tags").onchange = e => apply(() => {
+    t.tags = e.target.value.split(",").map(s => s.trim()).filter(Boolean);
+  });
+
+  // 依存タスク: 追加・削除とも即保存
+  panel.querySelectorAll(".dep-chip [data-testid=dep-remove]").forEach(b => {
+    b.onclick = () => {
+      const id = b.closest(".dep-chip").dataset.dep;
+      apply(() => { t.blockedBy = (t.blockedBy || []).filter(x => x !== id); });
+    };
+  });
+  $("#tm-dep-add").onchange = e => {
+    const id = e.target.value;
+    if (!id) return;
+    if (wouldCycle(t.id, id)) { toast("循環依存になるため追加できません", "error"); e.target.value = ""; return; }
+    apply(() => { t.blockedBy = [...(t.blockedBy || []), id]; });
+  };
+
+  // 次回アクション: 4欄のどれかが変わったらまとめて保存（日付・時刻はiOS対策で再描画をblurまで遅延）
+  const naSave = () => {
+    const what = $("#tm-na-what").value.trim();
+    const date = $("#tm-na-date").value;
+    const st = $("#tm-na-start").value;
+    const en = $("#tm-na-end").value;
+    liteApply(() => {
+      t.nextAction = (what || date) ? { what, date: date || null, startTime: st || null, endTime: en || null } : null;
+    });
+  };
+  for (const id of ["tm-na-what", "tm-na-date", "tm-na-start", "tm-na-end"]) {
+    $("#" + id).onchange = naSave;
+    refreshOnBlur($("#" + id));
+  }
+
+  // 繰り返し設定
+  const repeatSave = () => {
+    const unit = $("#tm-repeat-unit").value;
+    if (!unit) { apply(() => { t.repeat = null; }); return; }
+    const interval = Math.max(1, parseInt($("#tm-repeat-interval").value, 10) || 1);
+    const from = $("#tm-repeat-from").value === "completion" ? "completion" : "due";
+    const byDay = unit === "week"
+      ? [...panel.querySelectorAll("#tm-repeat-days input:checked")].map(cb => Number(cb.value)).sort((a, b) => a - b)
+      : undefined;
+    apply(() => { t.repeat = { unit, interval, from, ...(byDay && byDay.length ? { byDay } : {}) }; });
+  };
+  $("#tm-repeat-unit").onchange = () => {
+    const daysBox = panel.querySelector("#tm-repeat-days");
+    if (daysBox) daysBox.style.display = $("#tm-repeat-unit").value === "week" ? "flex" : "none";
+    repeatSave();
+  };
+  $("#tm-repeat-interval").onchange = repeatSave;
+  $("#tm-repeat-from").onchange = repeatSave;
+  panel.querySelectorAll("#tm-repeat-days input").forEach(cb => { cb.onchange = repeatSave; });
+  } // detailExpanded
+
+  // サブタスク
+  panel.querySelectorAll(".subtask-line").forEach(line => {
+    const sid = line.dataset.sub;
+    line.querySelector("[data-testid=sub-check]").onclick = () => toggleComplete(sid);
+    line.querySelector("[data-testid=sub-title]").onclick = () => openTaskModal(sid);
+  });
+  $("#tm-sub-new").onkeydown = e => {
+    if (e.key !== "Enter" || isIMEEnter(e)) return;
+    e.preventDefault();
+    const v = e.target.value.trim();
+    if (!v) return;
+    newTask({ title: v, parentTaskId: t.id, projectId: t.projectId, sectionId: t.sectionId });
+    commit();
+    panel.querySelector("#tm-sub-new")?.focus(); // 連続入力できるようフォーカス復帰
+  };
+}
+
+/* ---- プロジェクト作成・編集モーダル ---- */
+function openProjectModal(projId) {
+  const p = projId ? getProject(projId) : null;
+  const color = p ? p.color : PROJ_COLORS[state.projects.length % PROJ_COLORS.length];
+  const m = modalShell(`
+    <h2>${p ? "プロジェクト編集" : "新しいプロジェクト"}</h2>
+    <div class="f-row"><div class="f-col">
+      <label>プロジェクト名</label>
+      <input id="pm-name" data-testid="pm-name" value="${esc(p ? p.name : "")}" placeholder="例: Webサイトリニューアル">
+    </div></div>
+    <div class="f-row"><div class="f-col">
+      <label>カラー</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${PROJ_COLORS.map(c =>
+        `<button class="color-pick" data-color="${c}" style="width:26px;height:26px;border-radius:6px;background:${c};border:2px solid ${c === color ? "#fff" : "transparent"};cursor:pointer"></button>`).join("")}</div>
+    </div></div>
+    <div class="modal-foot">
+      ${p ? `<button class="btn danger" data-testid="pm-delete">削除</button>` : ""}
+      <span class="spacer"></span>
+      <button class="btn" data-testid="pm-cancel">キャンセル</button>
+      <button class="btn primary" data-testid="pm-save">${p ? "保存" : "作成"}</button>
+    </div>`);
+  let picked = color;
+  m.querySelectorAll(".color-pick").forEach(b => {
+    b.onclick = () => {
+      picked = b.dataset.color;
+      m.querySelectorAll(".color-pick").forEach(x => x.style.borderColor = "transparent");
+      b.style.borderColor = "#fff";
+    };
+  });
+  const input = m.querySelector("#pm-name");
+  input.focus();
+  const doSave = () => {
+    const name = input.value.trim();
+    if (!name) { toast("プロジェクト名を入力してください", "warn"); return; }
+    if (p) { p.name = name; p.color = picked; p.updatedAt = nowISO(); }
+    else {
+      const np = { id: uid(), name, color: picked, icon: "", status: "active", sortOrder: state.projects.length, showCompleted: true, createdAt: nowISO(), updatedAt: nowISO() };
+      state.projects.push(np);
+      view = { type: "project", id: np.id };
+    }
+    closeModal();
+    commit();
+  };
+  m.querySelector("[data-testid=pm-save]").onclick = doSave;
+  input.onkeydown = e => { if (e.key === "Enter" && !isIMEEnter(e)) doSave(); };
+  m.querySelector("[data-testid=pm-cancel]").onclick = closeModal;
+  if (p) m.querySelector("[data-testid=pm-delete]").onclick = () => {
+    if (!confirm(`プロジェクト「${p.name}」を削除しますか？（中のタスクはゴミ箱へ）`)) return;
+    for (const t of state.tasks.filter(t => t.projectId === p.id && !t.deletedAt)) { t.deletedAt = nowISO(); touch(t); }
+    state.sections = state.sections.filter(s => s.projectId !== p.id);
+    state.projects = state.projects.filter(x => x.id !== p.id);
+    closeModal();
+    view = { type: "today" };
+    commit();
+  };
+}
+/*========================================================
+  「今日すること」ページ（仕様12）
+========================================================*/
+function renderToday(body, actions) {
+  const isG = ganttToggle(actions, "today", `
+    <button class="btn small" data-testid="today-reset-order" style="margin-left:8px">自動順に戻す</button>
+    <button class="btn small primary" data-testid="today-add" style="margin-left:6px">＋今日やる</button>`);
+  if (isG) {
+    drawGantt(body, ganttRowsFor(excludeNested(todayTasks())));
+    return;
+  }
+  actions.querySelector("[data-testid=today-reset-order]").onclick = () => {
+    state.today.manualOrder = null;
+    commit();
+    toast("自動優先順位に戻しました");
+  };
+  actions.querySelector("[data-testid=today-add]").onclick = openTodayPicker;
+
+  const all = excludeNested(todayTasks()); // サブタスクは親の下にツリー表示
+  const today = todayStr();
+  // 時間指定あり（次回アクションの開始時刻 or 納期の時刻）は上部タイムラインへ
+  const timeOf = t =>
+    (t.nextAction && t.nextAction.date === today && t.nextAction.startTime) ? t.nextAction.startTime
+      : (t.dueDate === today && t.dueTime) ? t.dueTime : null;
+  const timed = all.filter(t => timeOf(t)).sort((a, b) => timeOf(a) < timeOf(b) ? -1 : 1);
+  const rest = all.filter(t => !timed.includes(t));
+
+  // 並び順: 手動並び替えがあればそれを尊重、なければ自動優先順
+  let ordered = autoSortToday(rest);
+  if (state.today.manualOrder) {
+    const idx = new Map(state.today.manualOrder.map((id, i) => [id, i]));
+    ordered = ordered.slice().sort((a, b) => {
+      const ia = idx.has(a.id) ? idx.get(a.id) : 1e9;
+      const ib = idx.has(b.id) ? idx.get(b.id) : 1e9;
+      return ia - ib;
+    });
+  }
+
+  if (timed.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="today-head">⏰ 時間指定</div>`);
+    for (const t of timed) {
+      const row = document.createElement("div");
+      row.className = "timed-row task-row prio-" + t.priority;
+      row.setAttribute("data-testid", "timed-row");
+      const isNA = t.nextAction && t.nextAction.date === today && t.nextAction.startTime;
+      const endT = isNA ? t.nextAction.endTime : null;
+      row.innerHTML = `
+        <button class="task-check p-${t.priority}" data-testid="task-check">✓</button>
+        <span class="time">${timeOf(t)}${endT ? "-" + endT : ""}</span>
+        <div class="t-main"><div class="t-title">${esc(t.title)}</div>
+          <div class="t-badges"><span class="badge ready">${isNA ? "▶ " + esc(t.nextAction.what || "") : "納期の時刻"}</span></div></div>`;
+      row.querySelector(".task-check").onclick = e => { e.stopPropagation(); toggleComplete(t.id); };
+      row.onclick = () => openTaskModal(t.id);
+      body.appendChild(row);
+    }
+    body.insertAdjacentHTML("beforeend", `<div class="today-head">📌 タスク（自動優先順）</div>`);
+  }
+
+  if (!ordered.length && !timed.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="empty-msg">今日着手できるタスクはありません 🎉<br>
+      <span style="font-size:12px">ブロック中・開始可能日前のタスクはここに表示されません</span></div>`);
+  }
+
+  const listWrap = document.createElement("div");
+  listWrap.id = "today-list";
+  body.appendChild(listWrap);
+  for (const t of ordered) {
+    const row = taskRowEl(t, { showProject: true, tree: true });
+    row.classList.add("today-row");
+    row.draggable = true;
+    row.title = scoreBreakdown(t);
+    // スコアバッジ
+    const sc = document.createElement("div");
+    sc.className = "today-score";
+    sc.setAttribute("data-testid", "today-score");
+    sc.textContent = Math.round(autoPriorityScore(t));
+    row.insertBefore(sc, row.querySelector(".t-main"));
+    // 先送りボタン
+    const pp = document.createElement("button");
+    pp.className = "btn small";
+    pp.setAttribute("data-testid", "postpone-btn");
+    pp.textContent = "明日へ";
+    pp.style.cssText = "margin-top:1px;flex:none";
+    pp.onclick = e => { e.stopPropagation(); postponeTask(t.id, 1); };
+    row.appendChild(pp);
+    // D&D: 上下端=実行順の並び替え / 中央=サブタスク化 / サブタスクを上下端に落とすと引き出し
+    row.addEventListener("dragstart", e => {
+      e.dataTransfer.setData("text/plain", t.id);
+      e.dataTransfer.effectAllowed = "move";
+    });
+    const clearMarks = () => row.classList.remove("drop-before", "drop-after", "drop-into");
+    row.addEventListener("dragover", e => {
+      e.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      clearMarks();
+      if (y < rect.height * 0.28) row.classList.add("drop-before");
+      else if (y > rect.height * 0.72) row.classList.add("drop-after");
+      else row.classList.add("drop-into");
+    });
+    row.addEventListener("dragleave", clearMarks);
+    row.addEventListener("drop", e => {
+      e.preventDefault();
+      const mode = row.classList.contains("drop-before") ? "before"
+        : row.classList.contains("drop-after") ? "after" : "into";
+      clearMarks();
+      const dragId = e.dataTransfer.getData("text/plain");
+      if (!dragId || dragId === t.id) return;
+      if (mode === "into") { handleTaskDrop(dragId, t.id, "into"); return; } // サブタスク化
+      const ids = ordered.map(x => x.id);
+      if (ids.includes(dragId)) {
+        // 今日リスト内の実行順並び替え（従来どおり）
+        const rest = ids.filter(x => x !== dragId);
+        let pos = rest.indexOf(t.id);
+        if (mode === "after") pos += 1;
+        rest.splice(pos, 0, dragId);
+        state.today.manualOrder = rest;
+        commit();
+      } else {
+        // リスト外（サブタスク等）からのドロップ → 構造の変更（トップレベルへ引き出し等）
+        handleTaskDrop(dragId, t.id, mode);
+      }
+    });
+    listWrap.appendChild(row);
+    appendTaskKids(listWrap, t, 0, { showProject: false, dnd: true }); // サブタスクもD&D可能なツリー表示
+  }
+
+  // もうすぐ着手可能（ブロック中/待機中で今日やる理由のあるもの）を参考表示
+  const soon = activeTasks().filter(t => !canStart(t) && hasTodayReason(t));
+  if (soon.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="today-head">🔒 待機中（着手不可のため一覧外）</div>`);
+    for (const t of soon) body.appendChild(taskRowEl(t, { showProject: true }));
+  }
+}
+
+// 「＋今日やる」ピッカー: 対象外のタスクを手動で今日に引き込む
+function openTodayPicker() {
+  const candidates = activeTasks().filter(t => canStart(t) && !hasTodayReason(t));
+  const m = modalShell(`
+    <h2>＋今日やるタスクを追加</h2>
+    ${candidates.length ? `<div id="tp-list">${candidates.map(t => `
+      <div class="task-row" data-pick="${t.id}" data-testid="today-pick-row">
+        <div class="t-main"><div class="t-title">${esc(t.title)}</div>
+        ${t.projectId ? `<div class="t-badges"><span class="badge">${esc(getProject(t.projectId)?.name || "")}</span></div>` : ""}</div>
+      </div>`).join("")}</div>`
+      : `<div class="empty-msg">追加できるタスクがありません<br><span style="font-size:12px">（着手可能で、まだ今日の一覧に出ていないタスクが対象）</span></div>`}
+    <div class="modal-foot"><span class="spacer"></span><button class="btn" data-testid="tp-close">閉じる</button></div>`);
+  m.querySelectorAll("[data-pick]").forEach(el => {
+    el.onclick = () => {
+      state.today.manualAdded.push(el.dataset.pick);
+      closeModal();
+      commit();
+      toast("今日やるリストに追加しました");
+    };
+  });
+  m.querySelector("[data-testid=tp-close]").onclick = closeModal;
+}
+/*========================================================
+  ダッシュボード（仕様13）
+========================================================*/
+function renderDashboard(body) {
+  const today = todayStr();
+  const tomorrow = addDays(today, 1);
+  const weekEnd = addDays(today, 6);
+  const act = activeTasks();
+
+  const isOn = (t, d) =>
+    (t.dueDate === d) ||
+    (t.startDate && t.startDate <= d && (t.endDate || t.startDate) >= d) ||
+    (t.nextAction && t.nextAction.date === d);
+
+  const cards = [
+    { title: "🔥 今日のアクション", tasks: act.filter(t => isOn(t, today)), testid: "dash-today" },
+    { title: "🌅 明日のアクション", tasks: act.filter(t => isOn(t, tomorrow)), testid: "dash-tomorrow" },
+    { title: "🗓 今週のアクション", tasks: act.filter(t => { for (let d = today; d <= weekEnd; d = addDays(d, 1)) if (isOn(t, d)) return true; return false; }), testid: "dash-week" },
+    { title: "⚠️ 期限超過", tasks: act.filter(t => t.dueDate && t.dueDate < today), alert: true, testid: "dash-overdue" },
+    { title: "📌 本日期日", tasks: act.filter(t => t.dueDate === today), testid: "dash-duetoday" },
+  ];
+
+  const grid = document.createElement("div");
+  grid.className = "dash-grid";
+  for (const c of cards) {
+    const card = document.createElement("div");
+    card.className = "dash-card";
+    card.setAttribute("data-testid", c.testid);
+    card.innerHTML = `<h3>${c.title}<span class="cnt" style="${c.alert && c.tasks.length ? "color:var(--danger)" : ""}">${c.tasks.length}件</span></h3>`;
+    if (!c.tasks.length) card.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:12px">なし</div>`);
+    for (const t of c.tasks.slice(0, 8)) {
+      const el = document.createElement("div");
+      el.className = "mini-task";
+      const dateInfo = t.dueDate ? "納期" + fmtDisp(t.dueDate) : t.nextAction?.date ? fmtDisp(t.nextAction.date) + (t.nextAction.startTime ? " " + t.nextAction.startTime : "") : "";
+      el.innerHTML = `<span style="color:${PRIO_COLOR[t.priority]}">●</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.title)}</span>
+        <span class="d">${dateInfo}</span>`;
+      el.onclick = () => openTaskModal(t.id);
+      card.appendChild(el);
+    }
+    if (c.tasks.length > 8) card.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:11px;padding:4px 2px">他${c.tasks.length - 8}件</div>`);
+    grid.appendChild(card);
+  }
+
+  // プロジェクトサマリー
+  const psCard = document.createElement("div");
+  psCard.className = "dash-card";
+  psCard.setAttribute("data-testid", "dash-projects");
+  psCard.innerHTML = `<h3>📁 プロジェクトサマリー</h3>`;
+  const projs = state.projects.filter(p => p.status !== "archived");
+  if (!projs.length) psCard.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:12px">プロジェクトがありません</div>`);
+  for (const p of projs) {
+    const all = liveTasks().filter(t => t.projectId === p.id);
+    const done = all.filter(t => t.status === "completed").length;
+    const od = all.filter(t => t.status === "active" && t.dueDate && t.dueDate < today).length;
+    const pct = all.length ? Math.round(done / all.length * 100) : 0;
+    const el = document.createElement("div");
+    el.className = "proj-sum";
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="proj-dot" style="background:${p.color}"></span>
+        <span style="flex:1">${esc(p.name)}</span>
+        <span style="font-size:12px;color:var(--text-dim)">${pct}%</span>
+      </div>
+      <div class="bar-bg"><div class="bar-fg" style="width:${pct}%"></div></div>
+      <div class="meta"><span>${done}/${all.length} 完了</span>${od ? `<span style="color:var(--danger)">超過${od}件</span>` : ""}</div>`;
+    el.onclick = () => setView({ type: "project", id: p.id });
+    psCard.appendChild(el);
+  }
+  grid.appendChild(psCard);
+  body.appendChild(grid);
+}
+/*========================================================
+  ガントチャート（仕様11）
+========================================================*/
+const G_ROW = 34, G_BAR_H = 18, G_HDR = 34;
+const G_ZOOM = { day: 36, week: 14, month: 5 }; // 1日あたりpx
+
+function renderGanttView(body, actions, title) {
+  const isAll = view.id === "__all"; // 全プロジェクト横断ビュー
+  const p = isAll ? null : getProject(view.id);
+  if (!isAll && !p) { setView({ type: "today" }); return; }
+  title.innerHTML = isAll
+    ? "📈 ガントチャート（全プロジェクト）"
+    : `<span class="proj-dot" style="background:${p.color};display:inline-block;margin-right:6px"></span>${esc(p.name)} — ガント`;
+
+  actions.innerHTML = `
+    ${isAll ? "" : `<div class="btn-group">
+      <button class="btn" data-testid="view-list-btn">リスト</button>
+      <button class="btn on" data-testid="view-gantt-btn">ガント</button>
+    </div>`}
+    <div class="btn-group" style="margin-left:8px">
+      ${["day", "week", "month"].map(z => `<button class="btn small ${ganttZoom === z ? "on" : ""}" data-zoom="${z}" data-testid="zoom-${z}">${{ day: "日", week: "週", month: "月" }[z]}</button>`).join("")}
+    </div>
+    <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>`;
+  if (!isAll) actions.querySelector("[data-testid=view-list-btn]").onclick = () => setView({ type: "project", id: p.id });
+  actions.querySelectorAll("[data-zoom]").forEach(b => {
+    b.onclick = () => { ganttZoom = b.dataset.zoom; ganttScrollMemo = null; render(); };
+  });
+  actions.querySelector("[data-testid=gantt-hide-done]").onclick = () => {
+    state.settings.ganttHideDone = !state.settings.ganttHideDone;
+    save();
+    render();
+  };
+
+  // ---- 行を構築（プロジェクト/セクション見出し + タスク + サブタスク） ----
+  const rows = []; // {kind:'proj'|'sec'|'task', proj?, sec?, task?, depth}
+  const bySort = (a, b) => a.sortOrder - b.sortOrder;
+  const pushTree = (t, depth) => {
+    if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
+    rows.push({ kind: "task", task: t, depth });
+    for (const k of state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort)) {
+      if (depth < 5) pushTree(k, depth + 1);
+    }
+  };
+  if (isAll) {
+    // プロジェクトごとにグループ化。プロジェクトなし（Inbox）は日付付きタスクのみ表示
+    for (const proj of state.projects.filter(x => x.status !== "archived")) {
+      const tasks = liveTasks().filter(t => t.projectId === proj.id && !t.parentTaskId).sort(bySort);
+      if (!tasks.length) continue;
+      rows.push({ kind: "proj", proj });
+      if (!proj.ganttCollapsed) for (const t of tasks) pushTree(t, 0);
+    }
+    const inboxTasks = liveTasks().filter(t => !t.projectId && !t.parentTaskId && (t.startDate || t.dueDate)).sort(bySort);
+    if (inboxTasks.length) {
+      rows.push({ kind: "proj", proj: null });
+      for (const t of inboxTasks) pushTree(t, 0);
+    }
+  } else {
+    const tasks = liveTasks().filter(t => t.projectId === p.id && !t.parentTaskId).sort(bySort);
+    const secs = state.sections.filter(s => s.projectId === p.id).sort(bySort);
+    for (const t of tasks.filter(t => !t.sectionId || !secs.find(s => s.id === t.sectionId))) pushTree(t, 0);
+    for (const s of secs) {
+      rows.push({ kind: "sec", sec: s });
+      if (!s.collapsed) for (const t of tasks.filter(t => t.sectionId === s.id)) pushTree(t, 0);
+    }
+  }
+  drawGantt(body, rows);
+}
+
+/* ---- 各ビュー共通: リスト/ガント切替の状態（ビューごと・セッション内） ---- */
+const viewGantt = {};
+
+// 表示中のタスク一覧からガント用の行データを構築（プロジェクト別にグループ化）
+function ganttRowsFor(tasks) {
+  const rows = [];
+  const bySort = (a, b) => a.sortOrder - b.sortOrder;
+  const pushTree = (t, depth) => {
+    if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
+    rows.push({ kind: "task", task: t, depth });
+    if (depth < 5) for (const k of state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort)) pushTree(k, depth + 1);
+  };
+  const groups = new Map(); // projectId -> tasks（出現順）
+  for (const t of tasks) {
+    const pid = t.projectId || "";
+    if (!groups.has(pid)) groups.set(pid, []);
+    groups.get(pid).push(t);
+  }
+  for (const [pid, list] of groups) {
+    const proj = pid ? getProject(pid) : null;
+    rows.push({ kind: "proj", proj });
+    if (proj && proj.ganttCollapsed) continue;
+    for (const t of list) pushTree(t, 0);
+  }
+  return rows;
+}
+
+// ビューヘッダーに「リスト｜ガント」切替を作る。戻り値=ガントモードかどうか
+function ganttToggle(actions, key, extraHtml) {
+  const isG = !!viewGantt[key];
+  actions.innerHTML = `
+    <div class="btn-group">
+      <button class="btn small ${!isG ? "on" : ""}" data-testid="mode-list">リスト</button>
+      <button class="btn small ${isG ? "on" : ""}" data-testid="mode-gantt">ガント</button>
+    </div>${isG
+      ? `<div class="btn-group" style="margin-left:8px">
+          ${["day", "week", "month"].map(z => `<button class="btn small ${ganttZoom === z ? "on" : ""}" data-zoom="${z}" data-testid="zoom-${z}">${{ day: "日", week: "週", month: "月" }[z]}</button>`).join("")}
+        </div>
+        <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>`
+      : (extraHtml || "")}`;
+  actions.querySelector("[data-testid=mode-list]").onclick = () => { viewGantt[key] = false; ganttScrollMemo = null; render(); };
+  actions.querySelector("[data-testid=mode-gantt]").onclick = () => { viewGantt[key] = true; ganttScrollMemo = null; render(); };
+  actions.querySelectorAll("[data-zoom]").forEach(b => {
+    b.onclick = () => { ganttZoom = b.dataset.zoom; ganttScrollMemo = null; render(); };
+  });
+  const hideDoneBtn = actions.querySelector("[data-testid=gantt-hide-done]");
+  if (hideDoneBtn) hideDoneBtn.onclick = () => {
+    state.settings.ganttHideDone = !state.settings.ganttHideDone;
+    save();
+    render();
+  };
+  return isG;
+}
+
+// 行データからガントチャートを描画（全ビュー共通エンジン）
+function drawGantt(body, rows) {
+  if (!rows.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="empty-msg">ガントに表示できるタスクがありません</div>`);
+    return;
+  }
+  // ---- 期間レンジ ----
+  const today = todayStr();
+  let min = today, max = today;
+  for (const r of rows) {
+    if (r.kind !== "task") continue;
+    const t = r.task;
+    for (const d of [t.startDate, t.endDate, t.dueDate, t.earliestStartDate]) {
+      if (!d) continue;
+      if (d < min) min = d;
+      if (d > max) max = d;
+    }
+  }
+  const rangeStart = addDays(min, -7);
+  const rangeEnd = addDays(max, ganttZoom === "month" ? 45 : 14);
+  const days = diffDays(rangeEnd, rangeStart) + 1;
+  const dw = G_ZOOM[ganttZoom];
+  const W = days * dw, H = rows.length * G_ROW;
+  const dx = d => diffDays(d, rangeStart) * dw;
+
+  // ---- 左：タスク名列 ----
+  const wrap = document.createElement("div");
+  wrap.id = "gantt-wrap";
+  const names = document.createElement("div");
+  names.id = "gantt-names";
+  names.innerHTML = `<div class="g-hdr-row">タスク</div>` + rows.map(r => {
+    if (r.kind === "proj") {
+      const proj = r.proj;
+      return `<div class="g-name-row head" data-proj-row="${proj ? proj.id : ""}" data-testid="gantt-proj-row">
+        ${proj ? `<span class="tri" style="font-size:9px">${proj.ganttCollapsed ? "▶" : "▼"}</span>` : ""}
+        <span class="proj-dot" style="background:${proj ? proj.color : "var(--text-faint)"}"></span>
+        <span class="nm">${proj ? esc(proj.name) : "📥 受信トレイ"}</span></div>`;
+    }
+    if (r.kind === "sec") return `<div class="g-name-row head" data-sec="${r.sec.id}"><span class="tri" style="font-size:9px">${r.sec.collapsed ? "▶" : "▼"}</span><span class="nm">${esc(r.sec.name)}</span></div>`;
+    const t = r.task;
+    const mark = t.status === "completed" ? "✓ " : isBlocked(t) ? "🔒" : isWaiting(t) ? "⏳" : "";
+    return `<div class="g-name-row" data-task="${t.id}" data-testid="gantt-name" style="padding-left:${8 + r.depth * 14}px">
+      <span class="nm" style="${t.status === "completed" ? "text-decoration:line-through;color:var(--text-faint)" : ""}">${mark}${esc(t.title)}</span></div>`;
+  }).join("");
+  names.querySelectorAll("[data-sec]").forEach(el => {
+    el.onclick = () => { const s = getSection(el.dataset.sec); s.collapsed = !s.collapsed; commit(); };
+  });
+  names.querySelectorAll("[data-proj-row]").forEach(el => {
+    el.onclick = () => {
+      const proj = getProject(el.dataset.projRow);
+      if (proj) { proj.ganttCollapsed = !proj.ganttCollapsed; commit(); }
+    };
+  });
+  names.querySelectorAll("[data-task]").forEach(el => {
+    el.onclick = () => openTaskModal(el.dataset.task);
+  });
+
+  // ---- 右：タイムラインSVG ----
+  const scroll = document.createElement("div");
+  scroll.id = "gantt-scroll";
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H + G_HDR);
+  svg.setAttribute("data-testid", "gantt-svg");
+  svg.style.display = "block";
+
+  let defs = `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="var(--text-dim)"/></marker></defs>`;
+  let gridHtml = "", hdrHtml = "", barsHtml = "", depHtml = "";
+
+  // グリッド・ヘッダー
+  for (let i = 0; i < days; i++) {
+    const d = addDays(rangeStart, i);
+    const dt = parseDate(d);
+    const x = i * dw;
+    const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
+    if (isWeekend && ganttZoom !== "month") gridHtml += `<rect x="${x}" y="${G_HDR}" width="${dw}" height="${H}" fill="rgba(255,255,255,.03)"/>`;
+    if (ganttZoom === "day") {
+      gridHtml += `<line x1="${x}" y1="${G_HDR}" x2="${x}" y2="${H + G_HDR}" stroke="var(--bg3)" stroke-width="1"/>`;
+      hdrHtml += `<text x="${x + dw / 2}" y="${G_HDR - 12}" text-anchor="middle" font-size="10" fill="${isWeekend ? "var(--text-faint)" : "var(--text-dim)"}">${dt.getDate()}</text>`;
+      if (dt.getDate() === 1 || i === 0) hdrHtml += `<text x="${x + 2}" y="12" font-size="10" font-weight="bold" fill="var(--text-dim)">${dt.getFullYear()}/${dt.getMonth() + 1}</text>`;
+    } else if (ganttZoom === "week") {
+      if (dt.getDay() === 1) { // 月曜
+        gridHtml += `<line x1="${x}" y1="${G_HDR}" x2="${x}" y2="${H + G_HDR}" stroke="var(--bg3)" stroke-width="1"/>`;
+        hdrHtml += `<text x="${x + 2}" y="${G_HDR - 12}" font-size="10" fill="var(--text-dim)">${dt.getMonth() + 1}/${dt.getDate()}</text>`;
+      }
+      if (dt.getDate() === 1 || i === 0) hdrHtml += `<text x="${x + 2}" y="12" font-size="10" font-weight="bold" fill="var(--text-dim)">${dt.getFullYear()}/${dt.getMonth() + 1}</text>`;
+    } else { // month
+      if (dt.getDate() === 1 || i === 0) {
+        gridHtml += `<line x1="${x}" y1="${G_HDR}" x2="${x}" y2="${H + G_HDR}" stroke="var(--bg3)" stroke-width="1"/>`;
+        hdrHtml += `<text x="${x + 3}" y="${G_HDR - 12}" font-size="10" fill="var(--text-dim)">${dt.getFullYear()}/${dt.getMonth() + 1}</text>`;
+      }
+    }
+  }
+  // 行の区切り線
+  for (let r = 0; r <= rows.length; r++) {
+    gridHtml += `<line x1="0" y1="${G_HDR + r * G_ROW}" x2="${W}" y2="${G_HDR + r * G_ROW}" stroke="var(--bg3)" stroke-width="1"/>`;
+  }
+  // プロジェクト/セクション見出し行の背景
+  rows.forEach((r, i) => {
+    if (r.kind === "sec" || r.kind === "proj") gridHtml += `<rect x="0" y="${G_HDR + i * G_ROW}" width="${W}" height="${G_ROW}" fill="rgba(255,255,255,.04)"/>`;
+  });
+  // 今日線
+  const tx = dx(today) + dw / 2;
+  gridHtml += `<line x1="${tx}" y1="${G_HDR - 6}" x2="${tx}" y2="${H + G_HDR}" stroke="var(--danger)" stroke-width="1.5" data-testid="today-line"/>
+    <text x="${tx}" y="${G_HDR - 24}" text-anchor="middle" font-size="9" fill="var(--danger)">今日</text>`;
+
+  // ---- バー ----
+  const rowIndexByTask = new Map();
+  rows.forEach((r, i) => { if (r.kind === "task") rowIndexByTask.set(r.task.id, i); });
+
+  rows.forEach((r, i) => {
+    if (r.kind !== "task") return;
+    const t = r.task;
+    const y = G_HDR + i * G_ROW + (G_ROW - G_BAR_H) / 2;
+    const blocked = isBlocked(t);
+    const color = t.priority !== "none" ? PRIO_COLOR[t.priority] : (getProject(t.projectId)?.color || "var(--accent)");
+
+    // 開始可能日の制約マーカー
+    if (t.earliestStartDate) {
+      const ex = dx(t.earliestStartDate);
+      barsHtml += `<line x1="${ex}" y1="${y - 3}" x2="${ex}" y2="${y + G_BAR_H + 3}" stroke="var(--warn)" stroke-width="2" stroke-dasharray="3,2"/>`;
+    }
+    if (t.startDate && t.endDate) {
+      const x = dx(t.startDate);
+      const w = Math.max(dw * .6, (diffDays(t.endDate, t.startDate) + 1) * dw);
+      const opacity = t.status === "completed" ? .35 : blocked ? .45 : 1;
+      barsHtml += `<g class="gbar" data-task="${t.id}" data-testid="gantt-bar" style="cursor:${blocked ? "not-allowed" : "grab"}">
+        <rect x="${x}" y="${y}" width="${w}" height="${G_BAR_H}" rx="4" fill="${color}" opacity="${opacity * .45}"/>
+        <rect x="${x}" y="${y}" width="${w * (t.progress || 0) / 100}" height="${G_BAR_H}" rx="4" fill="${color}" opacity="${opacity}" data-role="progress"/>
+        <rect x="${x}" y="${y}" width="${w}" height="${G_BAR_H}" rx="4" fill="none" stroke="${color}" opacity="${opacity}"/>
+        ${blocked ? `<text x="${x + w / 2}" y="${y + 13}" text-anchor="middle" font-size="10">🔒</text>` : ""}
+        <rect data-role="handle-l" x="${x - 3}" y="${y}" width="7" height="${G_BAR_H}" fill="transparent" style="cursor:ew-resize"/>
+        <rect data-role="handle-r" x="${x + w - 4}" y="${y}" width="7" height="${G_BAR_H}" fill="transparent" style="cursor:ew-resize"/>
+      </g>`;
+    }
+    // マイルストーン（納期の菱形）
+    if (t.dueDate) {
+      const mx = dx(t.dueDate) + dw / 2, my = y + G_BAR_H / 2;
+      const late = t.status === "active" && t.dueDate < today;
+      barsHtml += `<path d="M${mx},${my - 7} L${mx + 7},${my} L${mx},${my + 7} L${mx - 7},${my} Z"
+        fill="${late ? "var(--danger)" : "var(--milestone)"}" data-task="${t.id}" data-testid="gantt-milestone" style="cursor:pointer"/>`;
+    }
+    // 日付なしタスクのラベル
+    if (!t.startDate && !t.dueDate) {
+      barsHtml += `<text x="${tx + 8}" y="${y + 13}" font-size="10" fill="var(--text-faint)" data-task="${t.id}" style="cursor:pointer">（日付未設定）</text>`;
+    }
+  });
+
+  // ---- 依存線（FS: 先行の終了 → 後続の開始） ----
+  rows.forEach((r, i) => {
+    if (r.kind !== "task") return;
+    const t = r.task;
+    for (const depId of t.blockedBy || []) {
+      const pre = getTask(depId);
+      if (!pre || pre.deletedAt || !rowIndexByTask.has(depId)) continue;
+      const pi = rowIndexByTask.get(depId);
+      const preEnd = pre.endDate || pre.dueDate || pre.startDate;
+      const tStart = t.startDate || t.dueDate;
+      if (!preEnd || !tStart) continue;
+      const x1 = dx(preEnd) + dw;
+      const y1 = G_HDR + pi * G_ROW + G_ROW / 2;
+      const x2 = dx(tStart);
+      const y2 = G_HDR + i * G_ROW + G_ROW / 2;
+      const bend = Math.max(x1 + 8, x2 - 8);
+      depHtml += `<path d="M${x1},${y1} L${x1 + 6},${y1} L${x1 + 6},${y2} L${x2 - 2},${y2}"
+        fill="none" stroke="var(--text-dim)" stroke-width="1.3" marker-end="url(#arrow)" data-testid="dep-line" opacity=".8"/>`;
+    }
+  });
+
+  svg.innerHTML = defs + gridHtml + depHtml + barsHtml + hdrHtml;
+  scroll.appendChild(svg);
+  wrap.appendChild(names);
+  wrap.appendChild(scroll);
+  body.appendChild(wrap);
+  body.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:11px;margin-top:8px">
+    バー: ドラッグで移動・端で伸縮 / ◆=納期 / 黄点線=開始可能日 / 🔒=依存タスク未完了 / 依存の設定はタスク編集画面から</div>`);
+
+  // スクロール位置: 記憶があれば復元、なければ今日を中央付近に（同期的に設定し、
+  // 描画後のズレでドラッグ座標が狂わないようにする）
+  scroll.scrollLeft = ganttScrollMemo !== null ? ganttScrollMemo : Math.max(0, dx(today) - scroll.clientWidth / 3);
+  scroll.addEventListener("scroll", () => { ganttScrollMemo = scroll.scrollLeft; });
+
+  // ---- ドラッグ操作 ----
+  attachGanttDrag(svg, dw, rangeStart);
+  // マイルストーン・日付なしラベルのクリック
+  svg.querySelectorAll("[data-testid=gantt-milestone], text[data-task]").forEach(el => {
+    el.addEventListener("click", () => openTaskModal(el.dataset.task));
+  });
+}
+
+function attachGanttDrag(svg, dw, rangeStart) {
+  let drag = null; // {taskId, mode, startX, origStart, origEnd, moved}
+  svg.querySelectorAll(".gbar").forEach(g => {
+    g.addEventListener("pointerdown", e => {
+      const taskId = g.dataset.task;
+      const t = getTask(taskId);
+      if (!t) return;
+      const role = e.target.dataset.role;
+      drag = {
+        taskId,
+        mode: role === "handle-l" ? "l" : role === "handle-r" ? "r" : "move",
+        startX: e.clientX,
+        origStart: t.startDate, origEnd: t.endDate,
+        moved: false, g,
+      };
+      g.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    g.addEventListener("pointermove", e => {
+      if (!drag || drag.g !== g) return;
+      const deltaDays = Math.round((e.clientX - drag.startX) / dw);
+      if (Math.abs(e.clientX - drag.startX) > 3) drag.moved = true;
+      if (!drag.moved) return;
+      const t = getTask(drag.taskId);
+      let ns = drag.origStart, ne = drag.origEnd;
+      if (drag.mode === "move") {
+        ns = addDays(drag.origStart, deltaDays);
+        ne = addDays(drag.origEnd, deltaDays);
+        // 開始可能日より前には置けない（仕様11.5）
+        if (t.earliestStartDate && ns < t.earliestStartDate) {
+          const shift = diffDays(t.earliestStartDate, ns);
+          ns = addDays(ns, shift); ne = addDays(ne, shift);
+        }
+      } else if (drag.mode === "l") {
+        ns = addDays(drag.origStart, deltaDays);
+        if (t.earliestStartDate && ns < t.earliestStartDate) ns = t.earliestStartDate;
+        if (ns > ne) ns = ne;
+      } else {
+        ne = addDays(drag.origEnd, deltaDays);
+        if (ne < ns) ne = ns;
+      }
+      drag.newStart = ns; drag.newEnd = ne;
+      // プレビュー描画（rect群を直接動かす）
+      const x = diffDays(ns, rangeStart) * dw;
+      const w = Math.max(dw * .6, (diffDays(ne, ns) + 1) * dw);
+      const rects = g.querySelectorAll("rect");
+      rects[0].setAttribute("x", x); rects[0].setAttribute("width", w);
+      rects[1].setAttribute("x", x); rects[1].setAttribute("width", w * (getTask(drag.taskId).progress || 0) / 100);
+      rects[2].setAttribute("x", x); rects[2].setAttribute("width", w);
+      const hl = g.querySelector("[data-role=handle-l]"), hr = g.querySelector("[data-role=handle-r]");
+      hl.setAttribute("x", x - 3); hr.setAttribute("x", x + w - 4);
+    });
+    g.addEventListener("pointerup", e => {
+      if (!drag || drag.g !== g) return;
+      const d = drag; drag = null;
+      const t = getTask(d.taskId);
+      if (!d.moved) { openTaskModal(d.taskId); return; }
+      if (!t || !d.newStart) { render(); return; }
+      t.startDate = d.newStart;
+      t.endDate = d.newEnd;
+      // 依存タスクとの整合警告（仕様11.5: 警告のみ、保存は許可）
+      const conflicts = (t.blockedBy || []).map(getTask).filter(p => p && !p.deletedAt && p.status !== "completed" && p.endDate && p.endDate > t.startDate);
+      if (conflicts.length) toast(`⚠ 先行タスク「${conflicts[0].title}」の終了日より前に開始しています`, "warn");
+      touch(t);
+      commit();
+    });
+    g.addEventListener("pointercancel", () => { if (drag && drag.g === g) { drag = null; render(); } });
+  });
+}
+/*========================================================
+  メモ（仕様7）: Markdown対応・プロジェクト/タスク紐付け
+========================================================*/
+// 最小Markdownレンダラ（見出し・太字・斜体・リスト・チェックボックス・コード・リンク）
+// opts.interactive: チェックボックスをクリック可能にする（data-mdline=元テキストの行番号）
+function renderMarkdown(src, opts = {}) {
+  const lines = String(src || "").split("\n");
+  let html = "", inList = false;
+  const inline = s => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, `<a href="$2" target="_blank" rel="noopener">$1</a>`);
+  const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    let mch;
+    if ((mch = line.match(/^(#{1,3})\s+(.*)/))) {
+      closeList();
+      html += `<h${mch[1].length}>${inline(mch[2])}</h${mch[1].length}>`;
+    } else if ((mch = line.match(/^\s*-\s+\[([ xX])\]\s+(.*)/))) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      const done = mch[1] !== " ";
+      html += `<li class="chk"><input type="checkbox" ${opts.interactive ? `data-mdline="${li}"` : "disabled"} ${done ? "checked" : ""}> ${done ? `<span style="text-decoration:line-through;color:var(--text-faint)">${inline(mch[2])}</span>` : inline(mch[2])}</li>`;
+    } else if ((mch = line.match(/^\s*[-*]\s+(.*)/))) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${inline(mch[1])}</li>`;
+    } else if (line.trim() === "") {
+      closeList();
+    } else {
+      closeList();
+      html += `<p>${inline(line)}</p>`;
+    }
+  }
+  closeList();
+  return html;
+}
+
+function renderMemos(body, actions) {
+  actions.innerHTML = `<button class="btn primary small" data-testid="add-memo-btn">＋新規メモ</button>`;
+  actions.querySelector("button").onclick = () => {
+    const memo = { id: uid(), title: "無題のメモ", body: "", projectId: null, taskId: null, tags: [], createdAt: nowISO(), updatedAt: nowISO(), deletedAt: null };
+    state.memos.push(memo);
+    editingMemoId = memo.id;
+    memoPreview = false;
+    commit();
+  };
+
+  const memos = state.memos.filter(m => !m.deletedAt).sort((a, b) => b.updatedAt < a.updatedAt ? -1 : 1);
+  const layout = document.createElement("div");
+  layout.id = "memo-layout";
+
+  const list = document.createElement("div");
+  list.id = "memo-list";
+  if (!memos.length) list.innerHTML = `<div class="empty-msg" style="padding:20px 0">メモがありません</div>`;
+  for (const memo of memos) {
+    const el = document.createElement("div");
+    el.className = "memo-item" + (memo.id === editingMemoId ? " active" : "");
+    el.setAttribute("data-testid", "memo-item");
+    const linked = memo.taskId ? getTask(memo.taskId)?.title : memo.projectId ? getProject(memo.projectId)?.name : null;
+    el.innerHTML = `<div class="m-title">${esc(memo.title)}</div>
+      <div class="m-date">${memo.updatedAt.slice(0, 10)}${linked ? " · 🔗" + esc(linked) : ""}</div>`;
+    el.onclick = () => { editingMemoId = memo.id; render(); };
+    list.appendChild(el);
+  }
+  layout.appendChild(list);
+
+  const editor = document.createElement("div");
+  editor.id = "memo-editor";
+  const memo = state.memos.find(m => m.id === editingMemoId && !m.deletedAt);
+  if (!memo) {
+    editor.innerHTML = `<div class="empty-msg">メモを選択するか、＋新規メモで作成してください</div>`;
+  } else {
+    const projOpts = `<option value="">プロジェクト紐付けなし</option>` + state.projects.map(p =>
+      `<option value="${p.id}" ${memo.projectId === p.id ? "selected" : ""}>📁 ${esc(p.name)}</option>`).join("");
+    const taskOpts = `<option value="">タスク紐付けなし</option>` + activeTasks().map(t =>
+      `<option value="${t.id}" ${memo.taskId === t.id ? "selected" : ""}>☑ ${esc(t.title)}</option>`).join("");
+    editor.innerHTML = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="memo-title" data-testid="memo-title" value="${esc(memo.title)}" style="flex:1;min-width:150px;font-weight:700">
+        <button class="btn small ${memoPreview ? "" : "primary"}" data-testid="memo-edit-btn">編集</button>
+        <button class="btn small ${memoPreview ? "primary" : ""}" data-testid="memo-preview-btn">プレビュー</button>
+        <button class="btn small danger" data-testid="memo-delete-btn">削除</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="memo-proj" data-testid="memo-proj" style="flex:1;min-width:140px">${projOpts}</select>
+        <select id="memo-task" data-testid="memo-task" style="flex:1;min-width:140px">${taskOpts}</select>
+      </div>
+      ${memoPreview
+        ? `<div id="memo-preview" data-testid="memo-preview">${renderMarkdown(memo.body)}</div>`
+        : `<textarea id="memo-body" data-testid="memo-body" placeholder="# 見出し、**太字**、- リスト、- [ ] チェックボックス などMarkdown対応">${esc(memo.body)}</textarea>`}
+    `;
+    const titleEl = editor.querySelector("#memo-title");
+    titleEl.onchange = () => { memo.title = titleEl.value.trim() || "無題のメモ"; memo.updatedAt = nowISO(); save(); renderSidebar(); };
+    editor.querySelector("#memo-proj").onchange = e => { memo.projectId = e.target.value || null; memo.updatedAt = nowISO(); save(); };
+    editor.querySelector("#memo-task").onchange = e => { memo.taskId = e.target.value || null; memo.updatedAt = nowISO(); save(); };
+    editor.querySelector("[data-testid=memo-edit-btn]").onclick = () => { memoPreview = false; render(); };
+    editor.querySelector("[data-testid=memo-preview-btn]").onclick = () => {
+      const ta = editor.querySelector("#memo-body");
+      if (ta) { memo.body = ta.value; memo.updatedAt = nowISO(); save(); }
+      memoPreview = true; render();
+    };
+    editor.querySelector("[data-testid=memo-delete-btn]").onclick = () => {
+      if (!confirm(`メモ「${memo.title}」を削除しますか？`)) return;
+      memo.deletedAt = nowISO();
+      editingMemoId = null;
+      commit();
+    };
+    const ta = editor.querySelector("#memo-body");
+    if (ta) {
+      let timer = null;
+      ta.oninput = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { memo.body = ta.value; memo.updatedAt = nowISO(); save(); }, 400);
+      };
+      ta.onblur = () => { memo.body = ta.value; memo.updatedAt = nowISO(); save(); };
+    }
+  }
+  layout.appendChild(editor);
+  body.appendChild(layout);
+  body.style.height = "100%";
+}
+/*========================================================
+  設定・データ管理（エクスポート/インポート/GAS同期）
+========================================================*/
+function renderSettings(body) {
+  body.innerHTML = `
+    <div class="dash-grid">
+      <div class="dash-card">
+        <h3>💾 データのエクスポート / インポート</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">全データをJSONファイルとして保存・復元できます。別の端末への移行にも使えます。</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn primary" data-testid="export-btn">⬇ エクスポート</button>
+          <button class="btn" data-testid="import-btn">⬆ インポート</button>
+          <input type="file" id="import-file" accept=".json,application/json" style="display:none">
+        </div>
+        <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">タスク・プロジェクト・メモ・添付をすべて削除して初期状態に戻します（同期設定は残ります）。</p>
+        <button class="btn danger" data-testid="reset-btn">🗑 全データをリセット</button>
+      </div>
+      <div class="dash-card">
+        <h3>📥 TickTickからインポート</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
+          TickTickの「設定 → データ → バックアップ → CSVでエクスポート」で作成したCSVファイルを取り込みます。
+          既存データは上書きせず、新しいプロジェクトとして追加されます（再インポートしても重複しません）。</p>
+        <button class="btn primary" data-testid="ticktick-import-btn">📥 CSVファイルを選択</button>
+        <input type="file" id="ticktick-import-file" data-testid="ticktick-import-file" accept=".csv,text/csv" style="display:none">
+      </div>
+      <div class="dash-card">
+        <h3>🔄 端末間同期（GAS + スプレッドシート）</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
+          同梱の <code>gas/Code.gs</code> をGoogle Apps Scriptにデプロイし、URLと共有キーを入力すると
+          PC⇔iPhoneでデータを同期できます（セットアップ手順はREADME参照）。<br>
+          設定後は<b>自動同期</b>：起動時・変更の15秒後・5分ごと。ボタンで今すぐ実行も可能。</p>
+        <div class="f-col" style="margin-bottom:8px">
+          <label>GAS WebアプリURL</label>
+          <input id="gas-url" data-testid="gas-url" placeholder="https://script.google.com/macros/s/.../exec" value="${esc(state.settings.gasUrl)}">
+        </div>
+        <div class="f-col" style="margin-bottom:10px">
+          <label>共有キー</label>
+          <input id="gas-key" data-testid="gas-key" placeholder="任意の合言葉（GAS側と同じ値）" value="${esc(state.settings.gasKey)}">
+        </div>
+        <button class="btn primary" data-testid="sync-btn">🔄 今すぐ同期</button>
+        <span id="sync-status" style="font-size:12px;color:var(--text-dim);margin-left:8px"></span>
+      </div>
+      <div class="dash-card">
+        <h3>ℹ️ このアプリについて</h3>
+        <p style="font-size:12px;color:var(--text-dim);line-height:1.8">
+          GanTODO — ガントチャート付きTODOアプリ（単一HTMLファイル）<br>
+          データはこのブラウザのlocalStorageに保存されます。<br><br>
+          <b>キーボードショートカット</b><br>
+          N: 新規タスク / /: 検索 / 1〜4: ビュー切替<br>
+          （1:今日 2:ダッシュボード 3:ガント 4:メモ）
+        </p>
+      </div>
+    </div>`;
+
+  body.querySelector("[data-testid=export-btn]").onclick = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "gantodo-backup-" + todayStr() + ".json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("エクスポートしました");
+  };
+  const fileInput = body.querySelector("#import-file");
+  body.querySelector("[data-testid=import-btn]").onclick = () => fileInput.click();
+  fileInput.onchange = () => {
+    const f = fileInput.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!data || !Array.isArray(data.tasks)) throw new Error("形式が正しくありません");
+        if (!confirm(`インポートすると現在のデータ（タスク${liveTasks().length}件）を上書きします。よろしいですか？`)) return;
+        const keep = { gasUrl: state.settings.gasUrl, gasKey: state.settings.gasKey };
+        state = Object.assign(defaultState(), data);
+        state.settings = Object.assign(defaultState().settings, data.settings || {}, {});
+        if (!state.settings.gasUrl) state.settings.gasUrl = keep.gasUrl;
+        commit();
+        toast("インポートしました（タスク" + liveTasks().length + "件）");
+      } catch (e) {
+        toast("インポート失敗: " + e.message, "error");
+      }
+    };
+    reader.readAsText(f);
+  };
+  body.querySelector("#gas-url").onchange = e => { state.settings.gasUrl = e.target.value.trim(); save(); };
+  body.querySelector("#gas-key").onchange = e => { state.settings.gasKey = e.target.value.trim(); save(); };
+  body.querySelector("[data-testid=sync-btn]").onclick = () => syncNow(null);
+
+  body.querySelector("[data-testid=reset-btn]").onclick = () => {
+    const n = liveTasks().length;
+    if (!confirm(`全データをリセットしますか？\nタスク${n}件・プロジェクト${state.projects.length}件・メモ・添付ファイルがすべて削除されます。\nこの操作は取り消せません（必要なら先にエクスポートしてください）。`)) return;
+    // 添付の実体（IndexedDB）も削除
+    try { indexedDB.deleteDatabase("gantodo_files"); idbHandle = null; } catch { /* 失敗しても続行 */ }
+    const keep = { gasUrl: state.settings.gasUrl, gasKey: state.settings.gasKey, sidebarHidden: state.settings.sidebarHidden };
+    state = defaultState();
+    Object.assign(state.settings, keep);
+    detailTaskId = null;
+    editingMemoId = null;
+    save();
+    setView({ type: "today" });
+    toast("すべてのデータをリセットしました");
+  };
+
+  const ttFileInput = body.querySelector("#ticktick-import-file");
+  body.querySelector("[data-testid=ticktick-import-btn]").onclick = () => ttFileInput.click();
+  ttFileInput.onchange = () => {
+    const f = ttFileInput.files[0];
+    ttFileInput.value = "";
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rows = parseTickTickCSV(String(reader.result));
+      if (!rows || !rows.length) { toast("TickTickのCSV形式として認識できませんでした", "error"); return; }
+      openTickTickImportModal(rows);
+    };
+    reader.onerror = () => toast("ファイルの読み込みに失敗しました", "error");
+    reader.readAsText(f, "utf-8");
+  };
+}
+
+/*========================================================
+  TickTick CSVインポート
+========================================================*/
+// 汎用CSVパーサ（引用符内の改行・カンマ・二重引用符に対応）
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\n") { row.push(field); field = ""; rows.push(row); row = []; }
+      else if (c === "\r") { /* 無視 */ }
+      else field += c;
+    }
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// TickTickのCSVをパースして必要な列だけの配列にする（先頭の "Date:"/"Version:" 等の前置行はヘッダー行を探して読み飛ばす）
+function parseTickTickCSV(text) {
+  const rows = parseCSV(text);
+  const hi = rows.findIndex(r => r.includes("Title") && r.includes("taskId") && r.includes("parentId"));
+  if (hi < 0) return null;
+  const cols = rows[hi];
+  const idx = {};
+  cols.forEach((c, i) => { idx[c] = i; });
+  if (["Title", "Kind", "List Name", "taskId"].some(k => idx[k] === undefined)) return null;
+  const out = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.length !== cols.length) continue; // 壊れた行はスキップ
+    const g = name => (idx[name] !== undefined ? r[idx[name]] : "") ?? "";
+    out.push({
+      folder: g("Folder Name"), list: g("List Name"), title: g("Title"), kind: g("Kind"),
+      tags: g("Tags"), content: g("Content"), isChecklist: g("Is Check list") === "Y",
+      startDate: g("Start Date"), dueDate: g("Due Date"), repeat: g("Repeat"),
+      priority: g("Priority"), status: g("Status"), createdTime: g("Created Time"),
+      completedTime: g("Completed Time"), timezone: g("Timezone") || "Asia/Tokyo",
+      allDay: g("Is All Day"),
+      columnName: g("Column Name"), taskId: g("taskId"), parentId: g("parentId"),
+    });
+  }
+  return out;
+}
+
+// ISO日時（例: 2026-07-04T15:00:00+0000）を指定タイムゾーンの 'YYYY-MM-DD' に変換
+function ttDateOnly(iso, tz) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat("sv-SE", { timeZone: tz || "Asia/Tokyo" }).format(d);
+  } catch {
+    return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Tokyo" }).format(d);
+  }
+}
+
+// ISO日時を指定タイムゾーンの 'HH:MM' に変換（終日でないタスクの時刻取り込み用）
+function ttTimeOnly(iso, tz) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat("ja-JP", { timeZone: tz || "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+  } catch {
+    return null;
+  }
+}
+
+const TT_PRIORITY = { "0": "none", "1": "low", "3": "medium", "5": "high" };
+
+// Status: 0=通常 1=完了 2=アーカイブ（完了日時があれば完了扱い、なければ「見送り」扱い）
+function ttStatusFields(row) {
+  const completedAt = row.completedTime ? new Date(row.completedTime).toISOString() : null;
+  if (row.status === "1") return { status: "completed", completedAt: completedAt || nowISO() };
+  if (row.status === "2") return completedAt ? { status: "completed", completedAt } : { status: "abandoned", completedAt: null };
+  if (row.status === "0") return { status: "active", completedAt: null };
+  return { status: "abandoned", completedAt: null };
+}
+
+// TickTickのRepeatルール（RRULE風文字列）を内部の繰り返しモデルへ変換。未知の形式はnull（繰り返しなしで取り込み）
+function parseRRuleToRepeat(str) {
+  if (!str || !/^FREQ=/.test(str)) return null;
+  const parts = Object.fromEntries(str.split(";").map(kv => kv.split("=")));
+  const freqMap = { DAILY: "day", WEEKLY: "week", MONTHLY: "month", YEARLY: "year" };
+  const unit = freqMap[parts.FREQ];
+  if (!unit) return null;
+  const interval = Math.max(1, parseInt(parts.INTERVAL, 10) || 1);
+  const rep = { unit, interval, from: "due" };
+  if (unit === "week" && parts.BYDAY) {
+    const map = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+    const byDay = parts.BYDAY.split(",").map(d => map[d]).filter(d => d !== undefined).sort((a, b) => a - b);
+    if (byDay.length) rep.byDay = byDay;
+  }
+  return rep;
+}
+
+// 改行コードを統一し、チェックリスト形式（▫項目・◆見出し）ならMarkdownに変換
+function ttNormalizeText(s) {
+  return (s || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+function ttChecklistToNote(text) {
+  return text.split("\n").map(line => {
+    line = line.trim();
+    if (!line) return "";
+    if (line.startsWith("◆")) return "### " + line.slice(1).trim();
+    if (line.startsWith("▫")) return "- [ ] " + line.slice(1).trim();
+    return line;
+  }).join("\n");
+}
+function ttCapNote(note, cap) {
+  if (!cap || note.length <= cap) return note;
+  return note.slice(0, cap) + `\n…（${note.length - cap}文字省略。全文は元のCSVファイルに残っています）`;
+}
+
+// メモ本文の合計サイズを概算（インポート前の容量見積り用。1件あたりのJSONオーバーヘッドは実測ベースで約500文字）
+function estimateNoteBytes(rows, cap) {
+  let total = 0;
+  for (const r of rows) total += Math.min(ttNormalizeText(r.content).length, cap || Infinity) + r.title.length + 500;
+  return total;
+}
+
+// インポート本体: 新しいプロジェクト/セクション/タスクを作成（既存データは変更しない）
+function importTickTickRows(rows, opts) {
+  const cap = opts && opts.noteCap;
+  const existingBySource = new Map();
+  for (const t of state.tasks) if (t.source === "ticktick" && t.sourceId) existingBySource.set(t.sourceId, t);
+
+  const projByName = new Map(state.projects.map(p => [p.name, p]));
+  const getOrMakeProject = name => {
+    const key = name || "TickTickインポート";
+    if (projByName.has(key)) return projByName.get(key);
+    const p = {
+      id: uid(), name: key, color: PROJ_COLORS[state.projects.length % PROJ_COLORS.length],
+      icon: "", status: "active", sortOrder: state.projects.length, showCompleted: true,
+      createdAt: nowISO(), updatedAt: nowISO(),
+    };
+    state.projects.push(p);
+    projByName.set(key, p);
+    return p;
+  };
+  const secByKey = new Map(state.sections.map(s => [s.projectId + "|" + s.name, s]));
+  const getOrMakeSection = (projectId, name) => {
+    if (!name || name === "セクション化されていません") return null;
+    const key = projectId + "|" + name;
+    if (secByKey.has(key)) return secByKey.get(key);
+    const s = { id: uid(), projectId, name, collapsed: false, sortOrder: state.sections.filter(x => x.projectId === projectId).length };
+    state.sections.push(s);
+    secByKey.set(key, s);
+    return s;
+  };
+
+  // TickTickのtaskId -> 新しいid。過去のインポート分もすべて登録しておくことで、
+  // 範囲を絞った追加インポートでも「前回取り込んだ親」に子を正しくぶら下げられる
+  const idMap = new Map();
+  for (const [sid, ex] of existingBySource) idMap.set(sid, ex.id);
+  const toCreate = [];
+  let skipped = 0;
+  for (const r of rows) {
+    if (existingBySource.has(r.taskId)) { skipped++; continue; }
+    const proj = getOrMakeProject(r.list);
+    const sec = getOrMakeSection(proj.id, r.columnName);
+    const sf = ttStatusFields(r);
+    const rawNote = r.isChecklist ? ttChecklistToNote(ttNormalizeText(r.content)) : ttNormalizeText(r.content);
+    const rawStart = ttDateOnly(r.startDate, r.timezone);
+    const rawDue = ttDateOnly(r.dueDate, r.timezone);
+    let startDate = null, endDate = null, dueDate = rawDue;
+    if (rawStart && rawDue && rawStart < rawDue) { startDate = rawStart; endDate = rawDue; }
+    else if (rawStart && !rawDue) { dueDate = rawStart; }
+    const dueTime = dueDate && r.allDay === "false" ? ttTimeOnly(r.dueDate || r.startDate, r.timezone) : null;
+    const t = {
+      id: uid(), title: r.title || "(無題)", note: ttCapNote(rawNote, cap),
+      status: sf.status, progress: sf.status === "completed" ? 100 : 0,
+      projectId: proj.id, sectionId: sec ? sec.id : null, parentTaskId: null,
+      priority: TT_PRIORITY[r.priority] || "none",
+      tags: r.tags ? r.tags.split(",").map(s => s.trim()).filter(Boolean) : [],
+      assignee: "", category: "",
+      startDate, endDate, dueDate, dueTime, earliestStartDate: null,
+      blockedBy: [], isMilestone: false, nextAction: null,
+      attachments: [], collapsed: false,
+      repeat: parseRRuleToRepeat(r.repeat),
+      sortOrder: state.tasks.length + toCreate.length,
+      createdAt: r.createdTime && !isNaN(new Date(r.createdTime)) ? new Date(r.createdTime).toISOString() : nowISO(),
+      updatedAt: nowISO(), completedAt: sf.completedAt, deletedAt: null,
+      source: "ticktick", sourceId: r.taskId, ttParentId: r.parentId || null,
+    };
+    idMap.set(r.taskId, t.id);
+    toCreate.push(t);
+  }
+  // 親子関係を解決してからまとめて追加
+  for (const t of toCreate) {
+    if (t.ttParentId && idMap.has(t.ttParentId)) t.parentTaskId = idMap.get(t.ttParentId);
+    delete t.ttParentId;
+  }
+  state.tasks.push(...toCreate);
+  fixSubtaskProjects(state.tasks); // 親子でプロジェクトがずれていれば補正
+  return { created: toCreate.length, skipped, projects: new Set(toCreate.map(x => x.projectId)).size };
+}
+
+function openTickTickImportModal(rows) {
+  const mb = n => (n / 1024 / 1024).toFixed(1);
+  const listCount = new Set(rows.map(r => r.list)).size;
+  // 取り込む範囲: ブラウザの保存容量（約5MB）に収まるよう、未完了だけに絞れるようにする
+  const cutoff = addDays(todayStr(), -30);
+  const isActiveRow = r => ttStatusFields(r).status === "active";
+  const isRecentRow = r => {
+    const sf = ttStatusFields(r);
+    return sf.status === "active" || (sf.status === "completed" && sf.completedAt && sf.completedAt.slice(0, 10) >= cutoff);
+  };
+  const scopes = {
+    active: rows.filter(isActiveRow),
+    recent: rows.filter(isRecentRow),
+    all: rows,
+  };
+  const m = modalShell(`
+    <h2>📥 TickTickインポート</h2>
+    <p style="font-size:13px;color:var(--text-dim);line-height:1.7">
+      ${rows.length.toLocaleString()}件のタスク・${listCount}個のリストが見つかりました。既存のデータは変更されず、新しいプロジェクトとして追加されます（再インポートしても重複しません）。
+    </p>
+    <div class="f-col" style="margin-bottom:12px;gap:6px">
+      <label>取り込む範囲</label>
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="radio" name="tt-scope" value="active" checked data-testid="tt-scope-active"> 未完了のみ（${scopes.active.length.toLocaleString()}件・推奨）</label>
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="radio" name="tt-scope" value="recent" data-testid="tt-scope-recent"> 未完了＋30日以内に完了（${scopes.recent.length.toLocaleString()}件）</label>
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="radio" name="tt-scope" value="all" data-testid="tt-scope-all"> すべて（${rows.length.toLocaleString()}件・完了済みの履歴も含む）</label>
+    </div>
+    <div class="f-col" style="margin-bottom:12px;gap:6px">
+      <label>メモの扱い</label>
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="radio" name="tt-note" value="300" checked data-testid="tt-note-cap"> 300字に要約（推奨）</label>
+      <label style="font-size:13px;display:flex;gap:6px;align-items:center"><input type="radio" name="tt-note" value="" data-testid="tt-note-full"> 全文を保持</label>
+    </div>
+    <p style="font-size:12px" data-testid="tt-size-estimate"></p>
+    <div class="modal-foot">
+      <button class="btn" data-testid="tt-cancel">キャンセル</button>
+      <span class="spacer"></span>
+      <button class="btn primary" data-testid="tt-run">この条件でインポート</button>
+    </div>`);
+  const getScope = () => m.querySelector("input[name=tt-scope]:checked").value;
+  const getCap = () => m.querySelector("input[name=tt-note]:checked").value ? 300 : null;
+  const estEl = m.querySelector("[data-testid=tt-size-estimate]");
+  const updateEst = () => {
+    const bytes = estimateNoteBytes(scopes[getScope()], getCap());
+    const tooBig = bytes > 4 * 1024 * 1024; // 4MB超は失敗の可能性が高い
+    estEl.style.color = tooBig ? "var(--danger)" : "var(--text-dim)";
+    estEl.textContent = `推定サイズ: 約 ${mb(bytes)}MB` +
+      (tooBig ? "（⚠ ブラウザの保存上限を超える可能性が高いです。範囲を絞るか要約を選んでください）" : "（保存可能な範囲です）");
+  };
+  m.querySelectorAll("input[name=tt-scope], input[name=tt-note]").forEach(r => { r.onchange = updateEst; });
+  updateEst();
+  m.querySelector("[data-testid=tt-cancel]").onclick = closeModal;
+  m.querySelector("[data-testid=tt-run]").onclick = () => {
+    const chosen = scopes[getScope()];
+    const cap = getCap();
+    closeModal();
+    toast("インポート中...お待ちください");
+    setTimeout(() => {
+      const before = JSON.stringify(state);
+      const result = importTickTickRows(chosen, { noteCap: cap });
+      const ok = saveOrRevert(before);
+      render();
+      if (ok) {
+        toast(`✅ ${result.created}件のタスクを${result.projects}個のプロジェクトにインポートしました` +
+          (result.skipped ? `（${result.skipped}件は再インポートのためスキップ）` : ""));
+      }
+    }, 30);
+  };
+}
+
+/* ---- GAS同期: pull → マージ → push ---- */
+function mergeById(localArr, remoteArr) {
+  const map = new Map();
+  for (const e of remoteArr || []) map.set(e.id, e);
+  for (const e of localArr || []) {
+    const r = map.get(e.id);
+    if (!r || (e.updatedAt || "") >= (r.updatedAt || "")) map.set(e.id, e); // 新しい方が勝ち
+  }
+  return [...map.values()];
+}
+let syncInFlight = false;
+let autoSyncTimer = null;
+
+// 変更後しばらくしてから自動同期（連続編集中に何度も送らないよう15秒デバウンス）
+function queueSync() {
+  if (!state || !state.settings.gasUrl || syncInFlight) return;
+  clearTimeout(autoSyncTimer);
+  autoSyncTimer = setTimeout(() => syncNow(null, { quiet: true }), 15000);
+}
+
+async function syncNow(statusEl, opts = {}) {
+  const quiet = !!opts.quiet;
+  const { gasUrl, gasKey } = state.settings;
+  if (!gasUrl) { if (!quiet) toast("GAS WebアプリURLを設定してください", "warn"); return; }
+  if (syncInFlight) return;
+  syncInFlight = true;
+  clearTimeout(autoSyncTimer);
+  // 表示要素は書き込みのたびに取得する（途中でrender()が走ると要素が作り直されるため）
+  const setStatus = s => {
+    const el = document.getElementById("sync-status");
+    if (el) el.textContent = s;
+  };
+  setStatus("同期中...");
+  try {
+    // text/plain でPOSTするとCORSプリフライトを回避できる（GASの制約対応）
+    const pullRes = await fetch(gasUrl, {
+      method: "POST", headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ key: gasKey, action: "pull" }),
+    });
+    const pull = await pullRes.json();
+    if (pull.error) throw new Error(pull.error);
+    if (pull.data) {
+      const r = pull.data;
+      state.projects = mergeById(state.projects, r.projects);
+      state.sections = mergeById(state.sections, r.sections);
+      state.tasks = mergeById(state.tasks, r.tasks);
+      state.memos = mergeById(state.memos, r.memos);
+    }
+    const pushRes = await fetch(gasUrl, {
+      method: "POST", headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ key: gasKey, action: "push", data: {
+        projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
+      } }),
+    });
+    const push = await pushRes.json();
+    if (push.error) throw new Error(push.error);
+    save();
+    // 入力中に画面を作り直すとフォーカスが失われるため、編集中は再描画を控える
+    const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+    if (!typing) render(); else renderSidebar();
+    setStatus("✔ 同期完了 " + new Date().toLocaleTimeString());
+    if (!quiet) toast("同期が完了しました");
+  } catch (e) {
+    setStatus("✖ 失敗");
+    if (!quiet) toast("同期失敗: " + e.message, "error");
+  } finally {
+    syncInFlight = false;
+  }
+}
+/*========================================================
+  INIT: イベント・ショートカット・起動
+========================================================*/
+/* ---- グローバル・クイック追加バー（TickTick風・全画面共通） ---- */
+const qa = { priority: "none", project: "__ctx" }; // __ctx = 今の画面のプロジェクトに追加
+
+function qaContext() {
+  if ((view.type === "project" || view.type === "gantt") && getProject(view.id)) {
+    const p = getProject(view.id);
+    return { pid: p.id, name: p.name };
+  }
+  return { pid: null, name: "受信トレイ" };
+}
+
+function updateQuickAddBar() {
+  const bar = document.getElementById("global-add");
+  const hide = ["memos", "settings", "trash", "search"].includes(view.type);
+  bar.style.display = hide ? "none" : "flex";
+  if (hide) return;
+  const ctx = qaContext();
+  const destName = qa.project === "__ctx" ? ctx.name : (qa.project ? (getProject(qa.project)?.name || "受信トレイ") : "受信トレイ");
+  document.getElementById("qa-input").placeholder = `＋ タスクを"${destName}"に追加`;
+  document.getElementById("qa-today").classList.toggle("on", document.getElementById("qa-due").value === todayStr());
+  // 追加先セレクトを最新化
+  const sel = document.getElementById("qa-project");
+  const cur = qa.project;
+  sel.innerHTML = `<option value="__ctx">（今の画面: ${esc(ctx.name)}）</option><option value="">受信トレイ</option>` +
+    state.projects.filter(p => p.status !== "archived").map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  sel.value = cur;
+  if (sel.value !== cur) { qa.project = "__ctx"; sel.value = "__ctx"; }
+  // 優先度フラグの選択表示
+  document.querySelectorAll("#qa-popover .flag-btn").forEach(b => b.classList.toggle("sel", b.dataset.p === qa.priority));
+}
+
+function qaCreate() {
+  const input = document.getElementById("qa-input");
+  const title = input.value.trim();
+  if (!title) return;
+  const ctx = qaContext();
+  const pid = qa.project === "__ctx" ? ctx.pid : (qa.project || null);
+  const due = document.getElementById("qa-due").value || null;
+  const dueTime = document.getElementById("qa-due-time").value || null;
+  const start = document.getElementById("qa-start").value || null;
+  let end = document.getElementById("qa-end").value || null;
+  if (start && end && end < start) end = start;
+  const tags = document.getElementById("qa-tags").value.split(",").map(s => s.trim()).filter(Boolean);
+  const t = newTask({ title, projectId: pid, priority: qa.priority, dueDate: due, dueTime: due ? dueTime : null, startDate: start, endDate: end, tags });
+  if (view.type === "today") state.today.manualAdded.push(t.id); // 今日画面からの追加は「今日やる」へ
+  // 入力と単発オプションをリセット（追加先の選択は維持）
+  input.value = "";
+  qa.priority = "none";
+  for (const id of ["qa-due", "qa-due-time", "qa-start", "qa-end", "qa-tags"]) document.getElementById(id).value = "";
+  document.getElementById("qa-popover").classList.remove("open");
+  commit();
+  toast(`「${t.title}」を追加しました`);
+  input.focus();
+}
+
+{
+  const input = document.getElementById("qa-input");
+  input.addEventListener("keydown", e => { if (e.key === "Enter" && !isIMEEnter(e)) { e.preventDefault(); qaCreate(); } });
+  document.getElementById("qa-add-btn").onclick = qaCreate;
+  document.getElementById("qa-today").onclick = () => {
+    const due = document.getElementById("qa-due");
+    due.value = due.value === todayStr() ? "" : todayStr();
+    updateQuickAddBar();
+  };
+  document.getElementById("qa-more").onclick = () => document.getElementById("qa-popover").classList.toggle("open");
+  document.querySelectorAll("#qa-popover .flag-btn").forEach(b => {
+    b.onclick = () => { qa.priority = b.dataset.p; updateQuickAddBar(); };
+  });
+  document.getElementById("qa-project").onchange = e => { qa.project = e.target.value; updateQuickAddBar(); };
+  document.getElementById("qa-due").onchange = updateQuickAddBar;
+  // 外側クリックでポップオーバーを閉じる
+  document.addEventListener("mousedown", e => {
+    const pop = document.getElementById("qa-popover");
+    if (pop.classList.contains("open") && !e.target.closest("#global-add")) pop.classList.remove("open");
+  });
+}
+
+function quickNewTask() {
+  // どの画面でも: クイック追加バーにフォーカス（タスク系画面でなければ今日へ移動）
+  if (["memos", "settings", "trash", "search"].includes(view.type)) setView({ type: "today" });
+  document.getElementById("qa-input").focus();
+}
+
+document.getElementById("add-project-btn").onclick = () => openProjectModal(null);
+document.getElementById("fab").onclick = quickNewTask;
+document.getElementById("menu-btn").onclick = () => {
+  if (window.innerWidth <= 760) { // モバイル: ドロワー表示
+    document.getElementById("sidebar").classList.add("open");
+    document.getElementById("sidebar-bg").classList.add("show");
+  } else { // PC: サイドバーの表示/非表示を切替（設定として保存）
+    state.settings.sidebarHidden = !state.settings.sidebarHidden;
+    document.body.classList.toggle("sidebar-hidden", state.settings.sidebarHidden);
+    save();
+  }
+};
+document.getElementById("sidebar-bg").onclick = () => {
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("sidebar-bg").classList.remove("show");
+};
+
+const searchInput = document.getElementById("search-input");
+let searchTimer = null;
+searchInput.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const q = searchInput.value.trim();
+    if (q) setView({ type: "search", q });
+    else if (view.type === "search") setView({ type: "today" });
+  }, 250);
+});
+
+document.addEventListener("keydown", e => {
+  const tag = document.activeElement?.tagName;
+  const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  const modalOpen = !!document.querySelector(".modal-bg");
+  if (e.key === "Escape") { closeModal(); closeDetail(); return; }
+  if (typing || modalOpen) return;
+  if (e.ctrlKey && e.key === "s") { e.preventDefault(); save(); toast("保存しました（自動保存も有効です）"); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  switch (e.key) {
+    case "n": case "N": e.preventDefault(); quickNewTask(); break;
+    case "/": e.preventDefault(); searchInput.focus(); break;
+    case "1": setView({ type: "today" }); break;
+    case "2": setView({ type: "dashboard" }); break;
+    case "3": setView({ type: "gantt", id: "__all" }); break;
+    case "4": setView({ type: "memos" }); break;
+  }
+});
+
+// 画像・ファイルの貼り付け → 右パネルで開いているタスクに添付
+document.addEventListener("paste", e => {
+  if (!detailTaskId) return;
+  const files = [...(e.clipboardData?.files || [])];
+  if (!files.length) return;
+  const t = getTask(detailTaskId);
+  if (!t || t.deletedAt) return;
+  e.preventDefault();
+  attachFiles(t, files);
+});
+
+// 日付が変わったら「今日やる」をリセットして再描画（開きっぱなし対策）
+setInterval(() => {
+  if (state.today.date !== todayStr()) {
+    state.today = { date: todayStr(), manualOrder: null, manualAdded: [] };
+    commit();
+  }
+}, 60000);
+
+/* ---- 起動 ---- */
+state = loadState();
+save();
+document.body.classList.toggle("sidebar-hidden", !!state.settings.sidebarHidden);
+render();
+// 同期設定があれば、起動時と5分ごとに自動同期
+if (state.settings.gasUrl) setTimeout(() => syncNow(null, { quiet: true }), 1200);
+setInterval(() => { if (state.settings.gasUrl) syncNow(null, { quiet: true }); }, 300000);
+</script>
+</body>
+</html>
