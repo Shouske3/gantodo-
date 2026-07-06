@@ -876,15 +876,26 @@ function repeatLabel(rep) {
   return label;
 }
 
+// 週の開始日（設定のweekStart基準）に揃えた日付を返す（「n週ごと」の週ブロック判定に使用）
+function weekBlockStart(dateStr) {
+  const wStart = state.settings.weekStart === 1 ? 1 : 0;
+  const day = parseDate(dateStr).getDay();
+  return addDays(dateStr, -((day - wStart + 7) % 7));
+}
 // 指定日以降で次に繰り返す日付を計算
 function nextRepeatDate(base, rep) {
   if (!rep || !rep.unit) return base;
   if (rep.unit === "day") return addDays(base, rep.interval);
   if (rep.unit === "week") {
     if (rep.byDay && rep.byDay.length) {
+      // 「n週ごと」は、baseと同じ週ブロック内なら間隔を無視して次の曜日へ（同じ週内の複数曜日を消化）、
+      // 週ブロックが変わる場合はinterval週ごとの週ブロックだけを対象にする
+      const interval = Math.max(1, rep.interval || 1);
+      const baseBlock = weekBlockStart(base);
       let d = addDays(base, 1);
-      for (let i = 0; i < 14; i++) {
-        if (rep.byDay.includes(parseDate(d).getDay())) return d;
+      for (let i = 0; i < interval * 7 + 7; i++) {
+        const weeksBetween = diffDays(weekBlockStart(d), baseBlock) / 7;
+        if (weeksBetween % interval === 0 && rep.byDay.includes(parseDate(d).getDay())) return d;
         d = addDays(d, 1);
       }
     }
