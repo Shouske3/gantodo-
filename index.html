@@ -300,6 +300,13 @@ svg text { user-select: none; }
 .dep-search-item:hover { background: var(--bg2); }
 .dep-search-proj { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
 .dep-search-empty { padding: 8px 10px; font-size: 12px; color: var(--text-faint); }
+.date-field { display: flex; gap: 4px; align-items: center; }
+.date-field input[type="date"] { flex: 1; min-width: 0; }
+.date-clear-btn {
+  flex: none; width: 28px; height: 28px; padding: 0; font-size: 12px; line-height: 1;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg3); color: var(--text-dim); cursor: pointer;
+}
+.date-clear-btn:hover { color: var(--danger); border-color: var(--danger); }
 .subtask-line { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; }
 .subtask-line .task-check { margin-top: 2px; } /* 複数行のタイトルでも先頭行のテキストに揃える */
 .subtask-line .st-title { flex: 1; cursor: pointer; }
@@ -1657,15 +1664,31 @@ function renderDetailPanel() {
       <div class="f-col"><label>セクション</label><select id="tm-section" data-testid="tm-section">${secOpts}</select></div>
     </div>
     <div class="f-row">
-      <div class="f-col"><label>開始日</label><input type="date" id="tm-start" data-testid="tm-start" value="${t.startDate || ""}"></div>
-      <div class="f-col"><label>終了日</label><input type="date" id="tm-end" data-testid="tm-end" value="${t.endDate || ""}"></div>
+      <div class="f-col"><label>開始日</label>
+        <div class="date-field">
+          <input type="date" id="tm-start" data-testid="tm-start" value="${t.startDate || ""}">
+          <button type="button" class="date-clear-btn" data-testid="tm-start-clear" title="クリア">✕</button>
+        </div>
+      </div>
+      <div class="f-col"><label>終了日</label>
+        <div class="date-field">
+          <input type="date" id="tm-end" data-testid="tm-end" value="${t.endDate || ""}">
+          <button type="button" class="date-clear-btn" data-testid="tm-end-clear" title="クリア">✕</button>
+        </div>
+      </div>
     </div>
     <div class="f-row">
-      <div class="f-col"><label>開始可能日</label><input type="date" id="tm-esd" data-testid="tm-esd" value="${t.earliestStartDate || ""}"></div>
+      <div class="f-col"><label>開始可能日</label>
+        <div class="date-field">
+          <input type="date" id="tm-esd" data-testid="tm-esd" value="${t.earliestStartDate || ""}">
+          <button type="button" class="date-clear-btn" data-testid="tm-esd-clear" title="クリア">✕</button>
+        </div>
+      </div>
       <div class="f-col"><label>納期（◆）・時刻</label>
         <div style="display:flex;gap:6px">
           <input type="date" id="tm-due" data-testid="tm-due" value="${t.dueDate || ""}" style="flex:1.5;min-width:0">
           <input type="time" id="tm-due-time" data-testid="tm-due-time" value="${t.dueTime || ""}" style="flex:1;min-width:0" title="時刻（任意）">
+          <button type="button" class="date-clear-btn" data-testid="tm-due-clear" title="クリア">✕</button>
         </div>
       </div>
     </div>
@@ -1920,6 +1943,12 @@ function renderDetailPanel() {
   $("#tm-due-time").onchange = e => liteApply(() => { t.dueTime = e.target.value || null; });
   $("#tm-esd").onchange = e => liteApply(() => { t.earliestStartDate = e.target.value || null; });
   for (const id of ["tm-start", "tm-end", "tm-due", "tm-due-time", "tm-esd"]) refreshOnBlur($("#" + id));
+  // 日付クリアボタン: iOSのネイティブ日付ピッカーには一度設定した値を空に戻す手段がないため、
+  // 明示的なクリアボタンで対応する（ボタン操作なのでフルre-renderのapplyで即時反映してよい）
+  $("[data-testid=tm-start-clear]").onclick = () => apply(() => { t.startDate = null; });
+  $("[data-testid=tm-end-clear]").onclick = () => apply(() => { t.endDate = null; });
+  $("[data-testid=tm-esd-clear]").onclick = () => apply(() => { t.earliestStartDate = null; });
+  $("[data-testid=tm-due-clear]").onclick = () => apply(() => { t.dueDate = null; t.dueTime = null; });
   $("#tm-progress").oninput = () => { $("#tm-prog-val").textContent = $("#tm-progress").value + "%"; };
   $("#tm-progress").onchange = e => apply(() => { t.progress = Number(e.target.value); });
   $("#tm-milestone").onchange = e => apply(() => { t.isMilestone = e.target.checked; });
@@ -2124,7 +2153,7 @@ function openBulkEditModal() {
     <div class="bulk-field" data-field="deps">
       <label><input type="checkbox" data-testid="bulk-deps-on"> 依存タスク（追加）</label>
       <div class="bulk-inputs" style="flex-direction:column;align-items:stretch">
-        <input data-testid="bulk-deps-search" placeholder="タスク名で検索..." autocomplete="off">
+        <input data-testid="bulk-deps-search" data-no-autocheck placeholder="タスク名で検索..." autocomplete="off">
         <select multiple size="4" data-testid="bulk-deps" style="width:100%;margin-top:4px">
           ${depCandidates.map(x => `<option value="${x.id}">${esc(x.title)}${x.projectId ? "（" + esc(getProject(x.projectId)?.name || "") + "）" : ""}</option>`).join("")}
         </select>
@@ -2178,6 +2207,13 @@ function openBulkEditModal() {
     const sync = () => fieldEl.classList.toggle("off", !cb.checked);
     sync();
     cb.onchange = sync;
+    // 値を入力・選択したのにチェック入れ忘れて「何も反映されない」を防ぐため、自動で有効チェックを入れる
+    fieldEl.querySelectorAll("input, select, textarea").forEach(el => {
+      if (el === cb || el.dataset.noAutocheck !== undefined) return;
+      const autoCheck = () => { if (!cb.checked) { cb.checked = true; sync(); } };
+      el.addEventListener("input", autoCheck);
+      el.addEventListener("change", autoCheck);
+    });
   });
   // プロジェクト変更でセクションの選択肢を更新
   $("[data-testid=bulk-project]").onchange = () => {
