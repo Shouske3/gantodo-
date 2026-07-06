@@ -286,6 +286,20 @@ svg text { user-select: none; }
   padding: 2px 8px; font-size: 12px; margin: 2px 4px 2px 0;
 }
 .dep-chip button { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 13px; }
+.dep-search { position: relative; }
+.dep-search-list {
+  display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  max-height: 200px; overflow-y: auto; margin-top: 2px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.4);
+}
+.dep-search-item {
+  display: flex; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; font-size: 13px; cursor: pointer;
+}
+.dep-search-item:hover { background: var(--bg2); }
+.dep-search-proj { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+.dep-search-empty { padding: 8px 10px; font-size: 12px; color: var(--text-faint); }
 .subtask-line { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; }
 .subtask-line .task-check { margin-top: 2px; } /* 複数行のタイトルでも先頭行のテキストに揃える */
 .subtask-line .st-title { flex: 1; cursor: pointer; }
@@ -1669,10 +1683,10 @@ function renderDetailPanel() {
         const p = getTask(id);
         return p && !p.deletedAt ? `<span class="dep-chip" data-dep="${id}">🔒 ${esc(p.title)} <button data-testid="dep-remove">✕</button></span>` : "";
       }).join("")}</div>
-      <select id="tm-dep-add" data-testid="tm-dep-add">
-        <option value="">＋依存タスクを追加...</option>
-        ${depCandidates.map(x => `<option value="${x.id}">${esc(x.title)}${x.projectId ? "（" + esc(getProject(x.projectId)?.name || "") + "）" : ""}</option>`).join("")}
-      </select>
+      <div class="dep-search">
+        <input id="tm-dep-add" data-testid="tm-dep-add" placeholder="＋依存タスクを名前で検索して追加..." autocomplete="off">
+        <div id="tm-dep-add-list" class="dep-search-list" data-testid="tm-dep-add-list"></div>
+      </div>
     </div></div>
     <div class="f-row"><div class="f-col">
       <label>次回アクション・ステータス</label>
@@ -1920,12 +1934,30 @@ function renderDetailPanel() {
       apply(() => { t.blockedBy = (t.blockedBy || []).filter(x => x !== id); });
     };
   });
-  $("#tm-dep-add").onchange = e => {
-    const id = e.target.value;
-    if (!id) return;
-    if (wouldCycle(t.id, id)) { toast("循環依存になるため追加できません", "error"); e.target.value = ""; return; }
-    apply(() => { t.blockedBy = [...(t.blockedBy || []), id]; });
-  };
+  {
+    const searchEl = $("#tm-dep-add");
+    const listEl = $("#tm-dep-add-list");
+    const renderOptions = () => {
+      const q = searchEl.value.trim().toLowerCase();
+      const matches = (q ? depCandidates.filter(x => x.title.toLowerCase().includes(q)) : depCandidates).slice(0, 30);
+      if (!matches.length) {
+        listEl.innerHTML = `<div class="dep-search-empty">該当するタスクがありません</div>`;
+      } else {
+        listEl.innerHTML = matches.map(x => `<div class="dep-search-item" data-id="${x.id}">${esc(x.title)}${x.projectId ? `<span class="dep-search-proj">${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</div>`).join("");
+        listEl.querySelectorAll("[data-id]").forEach(el => {
+          el.onclick = () => {
+            const id = el.dataset.id;
+            if (wouldCycle(t.id, id)) { toast("循環依存になるため追加できません", "error"); return; }
+            apply(() => { t.blockedBy = [...(t.blockedBy || []), id]; });
+          };
+        });
+      }
+      listEl.style.display = "block";
+    };
+    searchEl.addEventListener("focus", renderOptions);
+    searchEl.addEventListener("input", renderOptions);
+    searchEl.addEventListener("blur", () => setTimeout(() => { listEl.style.display = "none"; }, 150));
+  }
 
   // 次回アクション・ステータス: 各欄のどれかが変わったらまとめて保存
   const naSave = () => {
@@ -2091,8 +2123,9 @@ function openBulkEditModal() {
     </div>
     <div class="bulk-field" data-field="deps">
       <label><input type="checkbox" data-testid="bulk-deps-on"> 依存タスク（追加）</label>
-      <div class="bulk-inputs">
-        <select multiple size="4" data-testid="bulk-deps" style="width:100%">
+      <div class="bulk-inputs" style="flex-direction:column;align-items:stretch">
+        <input data-testid="bulk-deps-search" placeholder="タスク名で検索..." autocomplete="off">
+        <select multiple size="4" data-testid="bulk-deps" style="width:100%;margin-top:4px">
           ${depCandidates.map(x => `<option value="${x.id}">${esc(x.title)}${x.projectId ? "（" + esc(getProject(x.projectId)?.name || "") + "）" : ""}</option>`).join("")}
         </select>
       </div>
@@ -2154,6 +2187,13 @@ function openBulkEditModal() {
   };
   $("[data-testid=bulk-progress]").oninput = () => {
     $("[data-testid=bulk-progress-val]").textContent = $("[data-testid=bulk-progress]").value + "%";
+  };
+  // 依存タスク候補をタスク名で絞り込み（選択済みoptionはDOMに残したままdisplay:noneで隠すため選択状態は保持される）
+  $("[data-testid=bulk-deps-search]").oninput = e => {
+    const q = e.target.value.trim().toLowerCase();
+    $("[data-testid=bulk-deps]").querySelectorAll("option").forEach(opt => {
+      opt.style.display = !q || opt.textContent.toLowerCase().includes(q) ? "" : "none";
+    });
   };
   $("[data-testid=bulk-repeat-unit]").onchange = () => {
     $("[data-testid=bulk-repeat-days]").style.display = $("[data-testid=bulk-repeat-unit]").value === "week" ? "flex" : "none";
