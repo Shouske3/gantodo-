@@ -777,7 +777,6 @@ function hasTodayReason(t) {
   const today = todayStr();
   if (t.dueDate && t.dueDate <= today) return true;
   if (t.startDate && t.startDate <= today && (!t.endDate || today <= t.endDate)) return true;
-  if (t.nextAction && t.nextAction.date === today) return true;
   if (state.today.manualAdded.includes(t.id)) return true;
   return false;
 }
@@ -791,10 +790,9 @@ function todayTasks() {
 // スコア計算そのものには時間指定の加点を含めない（time.js側のtimeOf()で判定・振り分けする）
 // 時間指定の加点: 00:00〜12:00は15点・12:00より後（〜24:00）は5点（時間指定がなければ0点）
 const SCORE_W = { due: 40, priority: 40, successor: 25, timeAM: 15, timePM: 5 };
-// 今日の時間指定（次回アクションの開始時刻 or 納期の時刻）。なければnull
+// 今日の時間指定（納期の時刻）。なければnull
 function todayTimeOf(t) {
   const today = todayStr();
-  if (t.nextAction && t.nextAction.date === today && t.nextAction.startTime) return t.nextAction.startTime;
   if (t.dueDate === today && t.dueTime) return t.dueTime;
   return null;
 }
@@ -890,7 +888,7 @@ function nextRepeatDate(base, rep) {
 function rollTaskForward(t) {
   const rep = t.repeat;
   const today = todayStr();
-  const anchor = t.dueDate || t.startDate || (t.nextAction && t.nextAction.date) || today;
+  const anchor = t.dueDate || t.startDate || today;
   const base = rep.from === "completion" ? today : anchor;
   const next = nextRepeatDate(base, rep);
   if (rep.until && next > rep.until) {
@@ -905,8 +903,7 @@ function rollTaskForward(t) {
   if (t.startDate) t.startDate = addDays(t.startDate, delta);
   if (t.endDate) t.endDate = addDays(t.endDate, delta);
   if (t.earliestStartDate) t.earliestStartDate = addDays(t.earliestStartDate, delta);
-  if (t.nextAction && t.nextAction.date) t.nextAction.date = addDays(t.nextAction.date, delta);
-  if (!t.dueDate && !t.startDate && !(t.nextAction && t.nextAction.date)) t.dueDate = next;
+  if (!t.dueDate && !t.startDate) t.dueDate = next;
   t.status = "active";
   t.completedAt = null;
   t.progress = 0;
@@ -1040,7 +1037,7 @@ function toggleComplete(id) {
     const continued = rollTaskForward(t);
     commit();
     if (continued) {
-      const nextLabel = t.dueDate || t.startDate || (t.nextAction && t.nextAction.date);
+      const nextLabel = t.dueDate || t.startDate;
       toast(nextLabel ? `🔁 完了！次回は ${fmtDispW(nextLabel)} です` : "🔁 完了！次回の予定に更新しました");
     } else {
       toast("✔ 完了しました（繰り返しの終了日を過ぎたため、これで終了です）");
@@ -1073,12 +1070,11 @@ function restoreTask(id) {
   t.deletedAt = null; touch(t);
   commit();
 }
-// 先送り: 期日・次回アクション・実施期間を n 日ずらす
+// 先送り: 期日・実施期間を n 日ずらす
 function postponeTask(id, n) {
   const t = getTask(id);
   if (!t) return;
   if (t.dueDate) t.dueDate = addDays(t.dueDate, n);
-  if (t.nextAction && t.nextAction.date) t.nextAction.date = addDays(t.nextAction.date, n);
   if (t.startDate && t.endDate) {
     // 実施期間はまるごとシフト（期間内が「今日やる理由」になっている場合に有効）
     if (t.startDate <= todayStr()) { t.startDate = addDays(todayStr(), n); }
@@ -1268,7 +1264,7 @@ function taskRowEl(t, opts = {}) {
     badges.push(`<span class="badge waiting">⏳ ${fmtDisp(t.earliestStartDate)}から着手可</span>`);
   }
   if (t.nextAction && t.nextAction.what) {
-    badges.push(`<span class="badge ready">▶ ${esc(t.nextAction.what)} ${t.nextAction.date ? fmtDisp(t.nextAction.date) : ""}${t.nextAction.startTime ? " " + t.nextAction.startTime : ""}</span>`);
+    badges.push(`<span class="badge ready">▶ ${esc(t.nextAction.what)}</span>`);
   }
   if (t.nextAction && t.nextAction.status) {
     badges.push(`<span class="badge">${esc(t.nextAction.status)}</span>`);
@@ -1452,11 +1448,11 @@ function renderProjectView(body, actions, title) {
 function renderSmart(body, actions, title) {
   const today = todayStr();
   const defs = {
-    today:   { label: "📅 Today", filter: t => hasTodayReason(t) || (t.nextAction && t.nextAction.date === today) },
+    today:   { label: "📅 Today", filter: t => hasTodayReason(t) },
     week:    { label: "🗓 今週", filter: t => {
       const end = addDays(today, 7 - parseDate(today).getDay() - (state.settings.weekStart === 1 ? -1 : 0) % 7);
       const wEnd = addDays(today, 6);
-      return (t.dueDate && t.dueDate <= wEnd) || (t.startDate && t.startDate <= wEnd && (!t.endDate || t.endDate >= today)) || (t.nextAction && t.nextAction.date && t.nextAction.date <= wEnd);
+      return (t.dueDate && t.dueDate <= wEnd) || (t.startDate && t.startDate <= wEnd && (!t.endDate || t.endDate >= today));
     } },
     inbox:   { label: "📥 Inbox", filter: t => !t.projectId && !t.parentTaskId },
     overdue: { label: "⚠️ 期限超過", filter: t => t.dueDate && t.dueDate < today },
@@ -1615,7 +1611,7 @@ function renderDetailPanel() {
   if (t.earliestStartDate) chips.push("⏳ " + fmtDisp(t.earliestStartDate) + "から");
   if (t.progress > 0) chips.push("進捗 " + t.progress + "%");
   if (liveDeps) chips.push("🔒 依存" + liveDeps + "件");
-  if (t.nextAction && (t.nextAction.what || t.nextAction.date)) chips.push("▶ " + (t.nextAction.what || fmtDisp(t.nextAction.date)));
+  if (t.nextAction && t.nextAction.what) chips.push("▶ " + t.nextAction.what);
   if (t.nextAction && t.nextAction.status) chips.push(t.nextAction.status);
   if (t.repeat && t.repeat.unit) chips.push("🔁 " + repeatLabel(t.repeat));
   for (const tag of t.tags || []) chips.push("#" + tag);
@@ -1681,11 +1677,6 @@ function renderDetailPanel() {
     <div class="f-row"><div class="f-col">
       <label>次回アクション・ステータス</label>
       <input id="tm-na-what" data-testid="tm-na-what" placeholder="何をするか" value="${esc(na.what || "")}">
-      <div style="display:flex;gap:6px;margin-top:4px">
-        <input type="date" id="tm-na-date" data-testid="tm-na-date" value="${na.date || ""}" style="flex:1.4;min-width:0">
-        <input type="time" id="tm-na-start" data-testid="tm-na-start" value="${na.startTime || ""}" style="flex:1;min-width:0">
-        <input type="time" id="tm-na-end" data-testid="tm-na-end" value="${na.endTime || ""}" style="flex:1;min-width:0">
-      </div>
       <input id="tm-na-status" data-testid="tm-na-status" placeholder="ステータス（自由記述、例：連絡待ち）" value="${esc(na.status || "")}" style="margin-top:4px">
     </div></div>
     <div class="f-row"><div class="f-col">
@@ -1936,20 +1927,16 @@ function renderDetailPanel() {
     apply(() => { t.blockedBy = [...(t.blockedBy || []), id]; });
   };
 
-  // 次回アクション・ステータス: 各欄のどれかが変わったらまとめて保存（日付・時刻はiOS対策で再描画をblurまで遅延）
+  // 次回アクション・ステータス: 各欄のどれかが変わったらまとめて保存
   const naSave = () => {
     const what = $("#tm-na-what").value.trim();
-    const date = $("#tm-na-date").value;
-    const st = $("#tm-na-start").value;
-    const en = $("#tm-na-end").value;
     const status = $("#tm-na-status").value.trim();
-    liteApply(() => {
-      t.nextAction = (what || date || status) ? { what, date: date || null, startTime: st || null, endTime: en || null, status: status || null } : null;
+    apply(() => {
+      t.nextAction = (what || status) ? { what, status: status || null } : null;
     });
   };
-  for (const id of ["tm-na-what", "tm-na-date", "tm-na-start", "tm-na-end", "tm-na-status"]) {
+  for (const id of ["tm-na-what", "tm-na-status"]) {
     $("#" + id).onchange = naSave;
-    refreshOnBlur($("#" + id));
   }
 
   // 繰り返し設定
@@ -2114,11 +2101,6 @@ function openBulkEditModal() {
       <label><input type="checkbox" data-testid="bulk-na-on"> 次回アクション・ステータス</label>
       <div class="bulk-inputs" style="flex-direction:column;align-items:stretch">
         <input data-testid="bulk-na-what" placeholder="何をするか">
-        <div style="display:flex;gap:6px;margin-top:4px">
-          <input type="date" data-testid="bulk-na-date" style="flex:1.4">
-          <input type="time" data-testid="bulk-na-start" style="flex:1">
-          <input type="time" data-testid="bulk-na-end" style="flex:1">
-        </div>
         <input data-testid="bulk-na-status" placeholder="ステータス（自由記述）" style="margin-top:4px">
       </div>
     </div>
@@ -2216,14 +2198,8 @@ function openBulkEditModal() {
       }
       if (on("na")) {
         const what = $("[data-testid=bulk-na-what]").value.trim();
-        const date = $("[data-testid=bulk-na-date]").value;
         const status = $("[data-testid=bulk-na-status]").value.trim();
-        t.nextAction = (what || date || status) ? {
-          what, date: date || null,
-          startTime: $("[data-testid=bulk-na-start]").value || null,
-          endTime: $("[data-testid=bulk-na-end]").value || null,
-          status: status || null,
-        } : null;
+        t.nextAction = (what || status) ? { what, status: status || null } : null;
         changed = true;
       }
       if (on("tags")) {
@@ -2396,8 +2372,7 @@ function renderDashboard(body) {
 
   const isOn = (t, d) =>
     (t.dueDate === d) ||
-    (t.startDate && t.startDate <= d && (t.endDate || t.startDate) >= d) ||
-    (t.nextAction && t.nextAction.date === d);
+    (t.startDate && t.startDate <= d && (t.endDate || t.startDate) >= d);
 
   const cards = [
     { title: "🔥 今日のアクション", tasks: act.filter(t => isOn(t, today)), testid: "dash-today" },
@@ -2418,7 +2393,7 @@ function renderDashboard(body) {
     for (const t of c.tasks.slice(0, 8)) {
       const el = document.createElement("div");
       el.className = "mini-task";
-      const dateInfo = t.dueDate ? "納期" + fmtDisp(t.dueDate) : t.nextAction?.date ? fmtDisp(t.nextAction.date) + (t.nextAction.startTime ? " " + t.nextAction.startTime : "") : "";
+      const dateInfo = t.dueDate ? "納期" + fmtDisp(t.dueDate) : "";
       el.innerHTML = `<span style="color:${PRIO_COLOR[t.priority]}">●</span>
         <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.title)}</span>
         <span class="d">${dateInfo}</span>`;
