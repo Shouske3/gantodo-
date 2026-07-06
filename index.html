@@ -1907,12 +1907,27 @@ function renderDetailPanel() {
 
   // ---- 以下は詳細設定（展開時のみDOMに存在） ----
   if (detailExpanded) {
-  $("#tm-project").onchange = e => apply(() => {
-    t.projectId = e.target.value || null;
-    t.sectionId = null;
-    cascadeProject(t.id, t.projectId); // サブタスクにも引き継ぐ
-  });
-  $("#tm-section").onchange = e => apply(() => { t.sectionId = e.target.value || null; });
+  $("#tm-project").onchange = e => {
+    // サブタスクは常に親タスクの直下に表示されるため（一覧は親子関係の木構造で描画され、
+    // 子タスク自身のprojectId/sectionIdは表示位置に反映されない）、サブタスクのプロジェクトを
+    // 明示的に変更した場合は親から独立させる（そうしないと変更しても見た目が一切変わらない）
+    const wasSub = !!t.parentTaskId;
+    apply(() => {
+      t.projectId = e.target.value || null;
+      t.sectionId = null;
+      if (wasSub) t.parentTaskId = null;
+      cascadeProject(t.id, t.projectId); // 自身の子孫にも引き継ぐ
+    });
+    if (wasSub) toast(`「${t.title}」を独立したタスクとして移動しました`);
+  };
+  $("#tm-section").onchange = e => {
+    const wasSub = !!t.parentTaskId;
+    apply(() => {
+      t.sectionId = e.target.value || null;
+      if (wasSub) t.parentTaskId = null;
+    });
+    if (wasSub) toast(`「${t.title}」を独立したタスクとして移動しました`);
+  };
   // 日付系: iOSはカレンダー操作中にもchangeが発火する。ここでパネルを再描画すると
   // 入力欄ごと作り直されてカレンダーが閉じてしまうため、「即保存＋メイン画面のみ更新」とし、
   // パネルの再描画はフォーカスが外れてから行う
@@ -2245,6 +2260,7 @@ function openBulkEditModal() {
       if (on("project")) {
         t.projectId = $("[data-testid=bulk-project]").value || null;
         t.sectionId = null;
+        if (t.parentTaskId) t.parentTaskId = null; // サブタスクは親子木構造で表示位置が決まるため、プロジェクト変更時は親から独立させる
         cascadeProject(t.id, t.projectId);
         changed = true;
       }
