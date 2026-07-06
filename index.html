@@ -129,6 +129,23 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   border-left: 3px solid transparent;
 }
 .task-row:hover { background: var(--bg-hover); }
+/* Ctrl/Cmd+クリックでの複数選択 */
+.task-row.selected { background: var(--accent-dim); outline: 1px solid var(--accent); outline-offset: -1px; }
+/* ===== 一括編集バー ===== */
+#bulk-bar {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+  z-index: 250; display: none; align-items: center; gap: 10px;
+  background: var(--bg2); border: 1px solid var(--accent); border-radius: 10px;
+  padding: 10px 14px; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+}
+#bulk-bar.show { display: flex; }
+#bulk-bar .count { font-weight: 700; color: var(--accent); white-space: nowrap; }
+.bulk-field { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.bulk-field:last-child { border-bottom: none; }
+.bulk-field > label { display: flex; align-items: center; gap: 6px; width: 120px; min-width: 120px; font-size: 12px; font-weight: 600; color: var(--text); }
+.bulk-field .bulk-inputs { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.bulk-field .bulk-inputs input, .bulk-field .bulk-inputs select { min-width: 0; }
+.bulk-field.off .bulk-inputs { opacity: .4; pointer-events: none; }
 /* D&D ドロップ位置の表示: 上端=前に挿入 / 下端=後ろに挿入 / 中央=サブタスク化 */
 .task-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .task-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
@@ -469,6 +486,7 @@ svg text { user-select: none; }
 <button id="fab" data-testid="fab">＋</button>
 <div id="modal-root"></div>
 <div id="toasts"></div>
+<div id="bulk-bar"></div>
 <script>
 "use strict";
 /*========================================================
@@ -484,6 +502,7 @@ let view = { type: "today" };          // 現在のビュー
 let detailTaskId = null;               // 右パネルで開いているタスク
 let noteEditing = false;               // タスクメモ欄が編集モードか
 let detailExpanded = false;            // 詳細設定（プロジェクト・日付等）を展開しているか
+const selectedTaskIds = new Set();     // Ctrl/Cmd+クリックで複数選択中のタスクid（セッション内のみ・非永続）
 let ganttZoom = "day";                  // day | week | month
 let ganttScrollMemo = null;             // ガントの横スクロール位置（再描画で失わないよう記憶）
 let editingMemoId = null;
@@ -1154,6 +1173,22 @@ function render() {
   renderMain();
   updateQuickAddBar();
   renderDetailPanel();
+  renderBulkBar();
+}
+// 複数選択中に画面下部へ出す「一括編集」バー
+function renderBulkBar() {
+  const bar = document.getElementById("bulk-bar");
+  // ゴミ箱に消えた・削除されたタスクは選択から除く
+  for (const id of [...selectedTaskIds]) if (!getTask(id) || getTask(id).deletedAt) selectedTaskIds.delete(id);
+  const n = selectedTaskIds.size;
+  if (!n) { bar.classList.remove("show"); bar.innerHTML = ""; return; }
+  bar.classList.add("show");
+  bar.innerHTML = `
+    <span class="count" data-testid="bulk-count">${n}件選択中</span>
+    <button class="btn small primary" data-testid="bulk-edit-btn">一括編集</button>
+    <button class="btn small" data-testid="bulk-clear-btn">選択解除</button>`;
+  bar.querySelector("[data-testid=bulk-edit-btn]").onclick = openBulkEditModal;
+  bar.querySelector("[data-testid=bulk-clear-btn]").onclick = () => { selectedTaskIds.clear(); render(); };
 }
 function renderMain() {
   renderSidebar();
@@ -1185,7 +1220,8 @@ function taskRowEl(t, opts = {}) {
   const blocked = isBlocked(t), waiting = isWaiting(t);
   row.className = "task-row prio-" + t.priority
     + (t.status === "completed" ? " done" : "")
-    + (blocked || waiting ? " blocked" : "");
+    + (blocked || waiting ? " blocked" : "")
+    + (selectedTaskIds.has(t.id) ? " selected" : "");
   row.dataset.taskId = t.id;
   row.setAttribute("data-testid", "task-row");
 
@@ -1267,7 +1303,16 @@ function taskRowEl(t, opts = {}) {
     });
   }
 
-  row.onclick = () => openTaskModal(t.id);
+  row.onclick = e => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      if (selectedTaskIds.has(t.id)) selectedTaskIds.delete(t.id);
+      else selectedTaskIds.add(t.id);
+      render();
+      return;
+    }
+    openTaskModal(t.id);
+  };
   return row;
 }
 
@@ -1968,6 +2013,210 @@ function openProjectModal(projId) {
     commit();
   };
 }
+
+/*========================================================
+  一括編集（複数選択したタスクへまとめて反映）
+========================================================*/
+function openBulkEditModal() {
+  const ids = [...selectedTaskIds];
+  const tasks = ids.map(getTask).filter(Boolean);
+  if (!tasks.length) return;
+  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived")
+    .map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  // 依存タスクの候補: 選択中のタスク同士は対象外（自己参照・循環の温床になりやすいため）
+  const depCandidates = liveTasks().filter(x => !ids.includes(x.id));
+
+  const m = modalShell(`
+    <h2>一括編集（${tasks.length}件選択中）</h2>
+    <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">チェックを入れた項目だけが、選択中の全タスクへまとめて反映されます。</p>
+
+    <div class="bulk-field" data-field="project">
+      <label><input type="checkbox" data-testid="bulk-project-on"> プロジェクト</label>
+      <div class="bulk-inputs"><select data-testid="bulk-project">${projOpts}</select></div>
+    </div>
+    <div class="bulk-field" data-field="section">
+      <label><input type="checkbox" data-testid="bulk-section-on"> セクション</label>
+      <div class="bulk-inputs">
+        <select data-testid="bulk-section"><option value="">（なし）</option></select>
+        <span style="font-size:11px;color:var(--text-faint)">※プロジェクトも同時に適用する場合のみ有効</span>
+      </div>
+    </div>
+    <div class="bulk-field" data-field="start">
+      <label><input type="checkbox" data-testid="bulk-start-on"> 開始日</label>
+      <div class="bulk-inputs"><input type="date" data-testid="bulk-start"></div>
+    </div>
+    <div class="bulk-field" data-field="end">
+      <label><input type="checkbox" data-testid="bulk-end-on"> 終了日</label>
+      <div class="bulk-inputs"><input type="date" data-testid="bulk-end"></div>
+    </div>
+    <div class="bulk-field" data-field="esd">
+      <label><input type="checkbox" data-testid="bulk-esd-on"> 開始可能日</label>
+      <div class="bulk-inputs"><input type="date" data-testid="bulk-esd"></div>
+    </div>
+    <div class="bulk-field" data-field="due">
+      <label><input type="checkbox" data-testid="bulk-due-on"> 納期・時刻</label>
+      <div class="bulk-inputs">
+        <input type="date" data-testid="bulk-due" style="flex:1.4">
+        <input type="time" data-testid="bulk-due-time" style="flex:1">
+      </div>
+    </div>
+    <div class="bulk-field" data-field="progress">
+      <label><input type="checkbox" data-testid="bulk-progress-on"> 進捗</label>
+      <div class="bulk-inputs">
+        <input type="range" min="0" max="100" step="5" value="0" data-testid="bulk-progress" style="flex:1">
+        <span data-testid="bulk-progress-val" style="width:38px;text-align:right;font-size:12px;color:var(--text-dim)">0%</span>
+      </div>
+    </div>
+    <div class="bulk-field" data-field="deps">
+      <label><input type="checkbox" data-testid="bulk-deps-on"> 依存タスク（追加）</label>
+      <div class="bulk-inputs">
+        <select multiple size="4" data-testid="bulk-deps" style="width:100%">
+          ${depCandidates.map(x => `<option value="${x.id}">${esc(x.title)}${x.projectId ? "（" + esc(getProject(x.projectId)?.name || "") + "）" : ""}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    <div class="bulk-field" data-field="na">
+      <label><input type="checkbox" data-testid="bulk-na-on"> 次回アクション</label>
+      <div class="bulk-inputs" style="flex-direction:column;align-items:stretch">
+        <input data-testid="bulk-na-what" placeholder="何をするか">
+        <div style="display:flex;gap:6px;margin-top:4px">
+          <input type="date" data-testid="bulk-na-date" style="flex:1.4">
+          <input type="time" data-testid="bulk-na-start" style="flex:1">
+          <input type="time" data-testid="bulk-na-end" style="flex:1">
+        </div>
+      </div>
+    </div>
+    <div class="bulk-field" data-field="tags">
+      <label><input type="checkbox" data-testid="bulk-tags-on"> タグ</label>
+      <div class="bulk-inputs"><input data-testid="bulk-tags" placeholder="カンマ区切り（既存タグを置き換えます）" style="width:100%"></div>
+    </div>
+    <div class="bulk-field" data-field="repeat">
+      <label><input type="checkbox" data-testid="bulk-repeat-on"> 繰り返し</label>
+      <div class="bulk-inputs" style="flex-direction:column;align-items:stretch">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <select data-testid="bulk-repeat-unit">
+            <option value="">なし</option>
+            ${["day", "week", "month", "year"].map(u => `<option value="${u}">${{ day: "日", week: "週", month: "ヶ月", year: "年" }[u]}ごと</option>`).join("")}
+          </select>
+          <input type="number" min="1" value="1" data-testid="bulk-repeat-interval" style="width:56px">
+          <select data-testid="bulk-repeat-from">
+            <option value="due">期日基準</option>
+            <option value="completion">完了日基準</option>
+          </select>
+        </div>
+        <div data-testid="bulk-repeat-days" style="display:none;gap:8px;margin-top:6px;flex-wrap:wrap">
+          ${WEEKDAYS_SHORT.map((w, i) => `<label style="font-size:11px;display:flex;gap:3px;align-items:center"><input type="checkbox" value="${i}">${w}</label>`).join("")}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
+          <label style="font-size:11px;color:var(--text-dim);white-space:nowrap">終了日（任意）</label>
+          <input type="date" data-testid="bulk-repeat-until" style="flex:1">
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn" data-testid="bulk-cancel">キャンセル</button>
+      <span class="spacer"></span>
+      <button class="btn primary" data-testid="bulk-apply">${tasks.length}件に適用</button>
+    </div>`);
+
+  const $ = sel => m.querySelector(sel);
+  // チェックのon/offで各項目の入力欄を有効/無効に切り替え
+  m.querySelectorAll(".bulk-field").forEach(fieldEl => {
+    const cb = fieldEl.querySelector("input[type=checkbox]");
+    const sync = () => fieldEl.classList.toggle("off", !cb.checked);
+    sync();
+    cb.onchange = sync;
+  });
+  // プロジェクト変更でセクションの選択肢を更新
+  $("[data-testid=bulk-project]").onchange = () => {
+    const pid = $("[data-testid=bulk-project]").value || null;
+    $("[data-testid=bulk-section]").innerHTML = `<option value="">（なし）</option>` +
+      state.sections.filter(s => s.projectId === pid).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  };
+  $("[data-testid=bulk-progress]").oninput = () => {
+    $("[data-testid=bulk-progress-val]").textContent = $("[data-testid=bulk-progress]").value + "%";
+  };
+  $("[data-testid=bulk-repeat-unit]").onchange = () => {
+    $("[data-testid=bulk-repeat-days]").style.display = $("[data-testid=bulk-repeat-unit]").value === "week" ? "flex" : "none";
+  };
+
+  $("[data-testid=bulk-cancel]").onclick = closeModal;
+  $("[data-testid=bulk-apply]").onclick = () => {
+    const on = name => $(`[data-testid=bulk-${name}-on]`).checked;
+    let touched = 0, skippedDeps = 0;
+
+    for (const t of tasks) {
+      let changed = false;
+      if (on("project")) {
+        t.projectId = $("[data-testid=bulk-project]").value || null;
+        t.sectionId = null;
+        cascadeProject(t.id, t.projectId);
+        changed = true;
+      }
+      if (on("section") && on("project")) {
+        t.sectionId = $("[data-testid=bulk-section]").value || null;
+        changed = true;
+      }
+      if (on("start")) { t.startDate = $("[data-testid=bulk-start]").value || null; changed = true; }
+      if (on("end")) { t.endDate = $("[data-testid=bulk-end]").value || null; changed = true; }
+      if (on("esd")) { t.earliestStartDate = $("[data-testid=bulk-esd]").value || null; changed = true; }
+      if (on("due")) {
+        t.dueDate = $("[data-testid=bulk-due]").value || null;
+        t.dueTime = t.dueDate ? ($("[data-testid=bulk-due-time]").value || null) : null;
+        changed = true;
+      }
+      if (on("progress")) { t.progress = Number($("[data-testid=bulk-progress]").value); changed = true; }
+      if (on("deps")) {
+        const chosen = [...$("[data-testid=bulk-deps]").selectedOptions].map(o => o.value);
+        const cur = new Set(t.blockedBy || []);
+        for (const depId of chosen) {
+          if (cur.has(depId)) continue;
+          if (wouldCycle(t.id, depId)) { skippedDeps++; continue; }
+          cur.add(depId);
+        }
+        t.blockedBy = [...cur];
+        changed = true;
+      }
+      if (on("na")) {
+        const what = $("[data-testid=bulk-na-what]").value.trim();
+        const date = $("[data-testid=bulk-na-date]").value;
+        t.nextAction = (what || date) ? {
+          what, date: date || null,
+          startTime: $("[data-testid=bulk-na-start]").value || null,
+          endTime: $("[data-testid=bulk-na-end]").value || null,
+        } : null;
+        changed = true;
+      }
+      if (on("tags")) {
+        t.tags = $("[data-testid=bulk-tags]").value.split(",").map(s => s.trim()).filter(Boolean);
+        changed = true;
+      }
+      if (on("repeat")) {
+        const unit = $("[data-testid=bulk-repeat-unit]").value;
+        if (!unit) {
+          t.repeat = null;
+        } else {
+          const interval = Math.max(1, parseInt($("[data-testid=bulk-repeat-interval]").value, 10) || 1);
+          const from = $("[data-testid=bulk-repeat-from]").value === "completion" ? "completion" : "due";
+          const until = $("[data-testid=bulk-repeat-until]").value || null;
+          const byDay = unit === "week"
+            ? [...m.querySelectorAll("[data-testid=bulk-repeat-days] input:checked")].map(cb => Number(cb.value)).sort((a, b) => a - b)
+            : undefined;
+          t.repeat = { unit, interval, from, ...(until ? { until } : {}), ...(byDay && byDay.length ? { byDay } : {}) };
+        }
+        changed = true;
+      }
+      if (changed) { touch(t); touched++; }
+    }
+    closeModal();
+    if (touched) { selectedTaskIds.clear(); commit(); }
+    let msg = `${touched}件のタスクを更新しました`;
+    if (skippedDeps) msg += `（依存タスクの追加は${skippedDeps}件、循環依存のためスキップ）`;
+    toast(msg);
+  };
+}
+
 /*========================================================
   「今日すること」ページ（仕様12）
 ========================================================*/
