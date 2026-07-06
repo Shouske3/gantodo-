@@ -77,6 +77,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .nav-item:hover { background: var(--bg-hover); }
 .nav-item.active { background: var(--accent-dim); }
+/* プロジェクト一覧のドラッグ並び替え */
+.nav-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.nav-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .nav-item .cnt {
   margin-left: auto; font-size: 11px; color: var(--text-dim);
   background: var(--bg3); border-radius: 10px; padding: 1px 7px;
@@ -1132,14 +1135,14 @@ function renderSidebar() {
     el.onclick = () => setView(items[i].v);
   });
 
-  // プロジェクト一覧
+  // プロジェクト一覧（sortOrder順・ドラッグで並び替え可能）
   const projNav = document.getElementById("nav-projects");
-  const projs = state.projects.filter(p => p.status !== "archived");
+  const projs = state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
   projNav.innerHTML = projs.map(p => {
     const act = activeTasks().filter(t => t.projectId === p.id);
     const od = act.filter(t => t.dueDate && t.dueDate < todayStr()).length;
     const active = (view.type === "project" || view.type === "gantt") && view.id === p.id;
-    return `<div class="nav-item ${active ? "active" : ""}" data-proj="${p.id}" data-testid="nav-proj-${esc(p.name)}">
+    return `<div class="nav-item ${active ? "active" : ""}" draggable="true" data-proj="${p.id}" data-testid="nav-proj-${esc(p.name)}">
       <span class="proj-dot" style="background:${p.color}"></span>
       <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span>
       ${od > 0 ? `<span class="cnt alert">${od}</span>` : act.length ? `<span class="cnt">${act.length}</span>` : ""}
@@ -1147,6 +1150,32 @@ function renderSidebar() {
   }).join("") || `<div style="color:var(--text-faint);font-size:12px;padding:4px 10px">まだありません</div>`;
   projNav.querySelectorAll(".nav-item").forEach(el => {
     el.onclick = () => setView({ type: "project", id: el.dataset.proj });
+    // ドラッグ＆ドロップで並び替え（上半分にドロップ=前へ・下半分=後ろへ）
+    el.addEventListener("dragstart", e => {
+      e.dataTransfer.setData("text/plain", el.dataset.proj);
+      e.dataTransfer.effectAllowed = "move";
+    });
+    const clearMarks = () => el.classList.remove("drop-before", "drop-after");
+    el.addEventListener("dragover", e => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      clearMarks();
+      el.classList.add(e.clientY - rect.top < rect.height / 2 ? "drop-before" : "drop-after");
+    });
+    el.addEventListener("dragleave", clearMarks);
+    el.addEventListener("drop", e => {
+      e.preventDefault();
+      const mode = el.classList.contains("drop-before") ? "before" : "after";
+      clearMarks();
+      const dragId = e.dataTransfer.getData("text/plain");
+      if (!dragId || dragId === el.dataset.proj) return;
+      const ids = projs.map(x => x.id).filter(x => x !== dragId);
+      let idx = ids.indexOf(el.dataset.proj);
+      if (mode === "after") idx += 1;
+      ids.splice(idx, 0, dragId);
+      ids.forEach((id, i) => { const proj = getProject(id); if (proj) proj.sortOrder = i; });
+      commit();
+    });
   });
 
   // その他
@@ -1240,6 +1269,9 @@ function taskRowEl(t, opts = {}) {
   }
   if (t.nextAction && t.nextAction.what) {
     badges.push(`<span class="badge ready">▶ ${esc(t.nextAction.what)} ${t.nextAction.date ? fmtDisp(t.nextAction.date) : ""}${t.nextAction.startTime ? " " + t.nextAction.startTime : ""}</span>`);
+  }
+  if (t.nextAction && t.nextAction.status) {
+    badges.push(`<span class="badge">${esc(t.nextAction.status)}</span>`);
   }
   if (t.repeat && t.repeat.unit) badges.push(`<span class="badge">🔁 ${esc(repeatLabel(t.repeat))}</span>`);
   for (const tag of t.tags || []) badges.push(`<span class="badge tag">#${esc(tag)}</span>`);
@@ -1565,7 +1597,7 @@ function renderDetailPanel() {
   }
   panel.classList.add("open");
   const done = t.status === "completed";
-  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived")
+  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
     .map(p => `<option value="${p.id}" ${t.projectId === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("");
   const secOpts = `<option value="">（なし）</option>` + state.sections.filter(s => s.projectId === t.projectId)
     .map(s => `<option value="${s.id}" ${t.sectionId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
@@ -1584,6 +1616,7 @@ function renderDetailPanel() {
   if (t.progress > 0) chips.push("進捗 " + t.progress + "%");
   if (liveDeps) chips.push("🔒 依存" + liveDeps + "件");
   if (t.nextAction && (t.nextAction.what || t.nextAction.date)) chips.push("▶ " + (t.nextAction.what || fmtDisp(t.nextAction.date)));
+  if (t.nextAction && t.nextAction.status) chips.push(t.nextAction.status);
   if (t.repeat && t.repeat.unit) chips.push("🔁 " + repeatLabel(t.repeat));
   for (const tag of t.tags || []) chips.push("#" + tag);
   const chipsHtml = chips.length
@@ -1646,13 +1679,14 @@ function renderDetailPanel() {
       </select>
     </div></div>
     <div class="f-row"><div class="f-col">
-      <label>次回アクション（いつ・何を・何時〜何時）</label>
+      <label>次回アクション・ステータス</label>
       <input id="tm-na-what" data-testid="tm-na-what" placeholder="何をするか" value="${esc(na.what || "")}">
       <div style="display:flex;gap:6px;margin-top:4px">
         <input type="date" id="tm-na-date" data-testid="tm-na-date" value="${na.date || ""}" style="flex:1.4;min-width:0">
         <input type="time" id="tm-na-start" data-testid="tm-na-start" value="${na.startTime || ""}" style="flex:1;min-width:0">
         <input type="time" id="tm-na-end" data-testid="tm-na-end" value="${na.endTime || ""}" style="flex:1;min-width:0">
       </div>
+      <input id="tm-na-status" data-testid="tm-na-status" placeholder="ステータス（自由記述、例：連絡待ち）" value="${esc(na.status || "")}" style="margin-top:4px">
     </div></div>
     <div class="f-row"><div class="f-col">
       <label>タグ（カンマ区切り）</label><input id="tm-tags" data-testid="tm-tags" value="${esc((t.tags || []).join(", "))}">
@@ -1902,17 +1936,18 @@ function renderDetailPanel() {
     apply(() => { t.blockedBy = [...(t.blockedBy || []), id]; });
   };
 
-  // 次回アクション: 4欄のどれかが変わったらまとめて保存（日付・時刻はiOS対策で再描画をblurまで遅延）
+  // 次回アクション・ステータス: 各欄のどれかが変わったらまとめて保存（日付・時刻はiOS対策で再描画をblurまで遅延）
   const naSave = () => {
     const what = $("#tm-na-what").value.trim();
     const date = $("#tm-na-date").value;
     const st = $("#tm-na-start").value;
     const en = $("#tm-na-end").value;
+    const status = $("#tm-na-status").value.trim();
     liteApply(() => {
-      t.nextAction = (what || date) ? { what, date: date || null, startTime: st || null, endTime: en || null } : null;
+      t.nextAction = (what || date || status) ? { what, date: date || null, startTime: st || null, endTime: en || null, status: status || null } : null;
     });
   };
-  for (const id of ["tm-na-what", "tm-na-date", "tm-na-start", "tm-na-end"]) {
+  for (const id of ["tm-na-what", "tm-na-date", "tm-na-start", "tm-na-end", "tm-na-status"]) {
     $("#" + id).onchange = naSave;
     refreshOnBlur($("#" + id));
   }
@@ -2021,7 +2056,7 @@ function openBulkEditModal() {
   const ids = [...selectedTaskIds];
   const tasks = ids.map(getTask).filter(Boolean);
   if (!tasks.length) return;
-  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived")
+  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
     .map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   // 依存タスクの候補: 選択中のタスク同士は対象外（自己参照・循環の温床になりやすいため）
   const depCandidates = liveTasks().filter(x => !ids.includes(x.id));
@@ -2076,7 +2111,7 @@ function openBulkEditModal() {
       </div>
     </div>
     <div class="bulk-field" data-field="na">
-      <label><input type="checkbox" data-testid="bulk-na-on"> 次回アクション</label>
+      <label><input type="checkbox" data-testid="bulk-na-on"> 次回アクション・ステータス</label>
       <div class="bulk-inputs" style="flex-direction:column;align-items:stretch">
         <input data-testid="bulk-na-what" placeholder="何をするか">
         <div style="display:flex;gap:6px;margin-top:4px">
@@ -2084,6 +2119,7 @@ function openBulkEditModal() {
           <input type="time" data-testid="bulk-na-start" style="flex:1">
           <input type="time" data-testid="bulk-na-end" style="flex:1">
         </div>
+        <input data-testid="bulk-na-status" placeholder="ステータス（自由記述）" style="margin-top:4px">
       </div>
     </div>
     <div class="bulk-field" data-field="tags">
@@ -2181,10 +2217,12 @@ function openBulkEditModal() {
       if (on("na")) {
         const what = $("[data-testid=bulk-na-what]").value.trim();
         const date = $("[data-testid=bulk-na-date]").value;
-        t.nextAction = (what || date) ? {
+        const status = $("[data-testid=bulk-na-status]").value.trim();
+        t.nextAction = (what || date || status) ? {
           what, date: date || null,
           startTime: $("[data-testid=bulk-na-start]").value || null,
           endTime: $("[data-testid=bulk-na-end]").value || null,
+          status: status || null,
         } : null;
         changed = true;
       }
@@ -2396,7 +2434,7 @@ function renderDashboard(body) {
   psCard.className = "dash-card";
   psCard.setAttribute("data-testid", "dash-projects");
   psCard.innerHTML = `<h3>📁 プロジェクトサマリー</h3>`;
-  const projs = state.projects.filter(p => p.status !== "archived");
+  const projs = state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
   if (!projs.length) psCard.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:12px">プロジェクトがありません</div>`);
   for (const p of projs) {
     const all = liveTasks().filter(t => t.projectId === p.id);
@@ -2464,7 +2502,7 @@ function renderGanttView(body, actions, title) {
   };
   if (isAll) {
     // プロジェクトごとにグループ化。プロジェクトなし（Inbox）は日付付きタスクのみ表示
-    for (const proj of state.projects.filter(x => x.status !== "archived")) {
+    for (const proj of state.projects.filter(x => x.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))) {
       const tasks = liveTasks().filter(t => t.projectId === proj.id && !t.parentTaskId).sort(bySort);
       if (!tasks.length) continue;
       rows.push({ kind: "proj", proj });
@@ -3470,7 +3508,7 @@ function updateQuickAddBar() {
   const sel = document.getElementById("qa-project");
   const cur = qa.project;
   sel.innerHTML = `<option value="__ctx">（今の画面: ${esc(ctx.name)}）</option><option value="">受信トレイ</option>` +
-    state.projects.filter(p => p.status !== "archived").map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+    state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   sel.value = cur;
   if (sel.value !== cur) { qa.project = "__ctx"; sel.value = "__ctx"; }
   // 優先度フラグの選択表示
