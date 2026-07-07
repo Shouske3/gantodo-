@@ -550,7 +550,7 @@ function defaultState() {
     tasks: [],
     memos: [],
     resetAt: null, // 全データリセットの実施時刻（同期時に「自分より新しいリセットが他端末で起きたか」の判定に使う）
-    today: { date: todayStr(), manualOrder: null, manualAdded: [] },
+    today: { date: todayStr(), manualOrder: null, manualAdded: [], updatedAt: nowISO() },
     settings: { gasUrl: "", gasKey: "", weekStart: 1, sidebarHidden: false, ganttHideDone: false },
   };
 }
@@ -563,7 +563,7 @@ function loadState() {
     const d = defaultState();
     for (const k of Object.keys(d)) if (s[k] === undefined) s[k] = d[k];
     // 「今日やる」リストは日付が変わったらリセット
-    if (s.today.date !== todayStr()) s.today = { date: todayStr(), manualOrder: null, manualAdded: [] };
+    if (s.today.date !== todayStr()) s.today = { date: todayStr(), manualOrder: null, manualAdded: [], updatedAt: nowISO() };
     // ゴミ箱の30日超えタスクを完全削除
     const limit = addDays(todayStr(), -30);
     s.tasks = s.tasks.filter(t => !t.deletedAt || t.deletedAt.slice(0, 10) >= limit);
@@ -1253,6 +1253,7 @@ function postponeTask(id, n) {
     if (t.endDate < t.startDate) t.endDate = t.startDate;
   }
   state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
+  state.today.updatedAt = nowISO();
   touch(t);
   commit();
   toast(n === 1 ? "明日へ先送りしました" : n + "日先へ送りました");
@@ -2510,6 +2511,7 @@ function renderToday(body, actions) {
   }
   actions.querySelector("[data-testid=today-reset-order]").onclick = () => {
     state.today.manualOrder = null;
+    state.today.updatedAt = nowISO();
     commit();
     toast("自動優先順位に戻しました");
   };
@@ -2595,6 +2597,7 @@ function renderToday(body, actions) {
         if (mode === "after") pos += 1;
         rest.splice(pos, 0, ...draggedInOrder);
         state.today.manualOrder = rest;
+        state.today.updatedAt = nowISO();
         commit();
       } else if (dragIds.length > 1) {
         // リスト外（サブタスク等）を含む複数選択のドロップ → まとめて構造変更
@@ -2649,6 +2652,7 @@ function openTodayPicker() {
   m.querySelectorAll("[data-pick]").forEach(el => {
     el.onclick = () => {
       state.today.manualAdded.push(el.dataset.pick);
+      state.today.updatedAt = nowISO();
       closeModal();
       commit();
       toast("今日やるリストに追加しました");
@@ -3689,7 +3693,7 @@ async function pushStateToGas() {
       method: "POST", headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ key: gasKey, action: "push", data: {
         projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
-        files, resetAt: state.resetAt,
+        files, resetAt: state.resetAt, today: state.today,
       } }),
     });
     const json = await res.json();
@@ -3742,6 +3746,18 @@ async function syncNow(statusEl, opts = {}) {
       state.tasks = mergeById(state.tasks, r.tasks, effectiveResetAt);
       state.memos = mergeById(state.memos, r.memos, effectiveResetAt);
       state.resetAt = effectiveResetAt;
+      // 「今日すること」の並び順も同期する。配列のmergeByIdとは違い単一オブジェクトなので、
+      // 「同じ日付（date）」かつ「相手が実際にカスタマイズ済み」の場合だけ、
+      // こちら未カスタマイズなら無条件に、両方カスタマイズ済みならupdatedAtが新しい方を採用する。
+      // （日付が変わった直後はローカルのupdatedAtが単なるリセットで新しくなるだけなので、
+      //   updatedAtだけの単純比較だと相手の実際の並び替えを誤って捨ててしまう）
+      if (r.today && r.today.date === state.today.date) {
+        const localCustomized = state.today.manualOrder !== null || (state.today.manualAdded || []).length > 0;
+        const remoteCustomized = r.today.manualOrder !== null || (r.today.manualAdded || []).length > 0;
+        if (remoteCustomized && (!localCustomized || (r.today.updatedAt || "") > (state.today.updatedAt || ""))) {
+          state.today = r.today;
+        }
+      }
       await applyIncomingFiles(r.files); // 相手が持つ添付の実体でローカルにまだないものを取り込む
     }
     const { files, skipped } = await collectAttachmentFilesForSync();
@@ -3750,7 +3766,7 @@ async function syncNow(statusEl, opts = {}) {
       method: "POST", headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ key: gasKey, action: "push", data: {
         projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
-        files, resetAt: state.resetAt,
+        files, resetAt: state.resetAt, today: state.today,
       } }),
     });
     const push = await pushRes.json();
@@ -3813,9 +3829,11 @@ function qaCreate() {
   // state.today.manualAddedは端末ローカルの一覧で同期対象外のため、日付なしのままだと
   // 他端末では「今日やる理由」が無く表示されない（納期はタスク本体の同期対象フィールド）。
   if (!due && view.type === "today") due = todayStr();
-  const start = document.getElementById("qa-start").value || null;
+  let start = document.getElementById("qa-start").value || null;
   let end = document.getElementById("qa-end").value || null;
-  if (start && end && end < start) end = start;
+  // 開始日が未入力なら終了日と同じ値を自動設定（詳細パネルの開始日/終了日の挙動と揃える）
+  if (end && !start) start = end;
+  else if (start && end && end < start) end = start;
   const endTime = document.getElementById("qa-end-time").value || null;
   const tags = document.getElementById("qa-tags").value.split(",").map(s => s.trim()).filter(Boolean);
   const t = newTask({ title, projectId: pid, priority: qa.priority, dueDate: due, startDate: start, endDate: end, endTime: end ? endTime : null, tags });
@@ -3824,6 +3842,7 @@ function qaCreate() {
   if (view.type === "today") {
     const currentOrder = state.today.manualOrder || autoSortToday(excludeNested(todayTasks())).map(x => x.id);
     state.today.manualOrder = [t.id, ...currentOrder.filter(id => id !== t.id)];
+    state.today.updatedAt = nowISO();
   }
   // 入力と単発オプションをリセット（追加先の選択は維持）
   input.value = "";
@@ -3923,7 +3942,7 @@ document.addEventListener("paste", e => {
 // 日付が変わったら「今日やる」をリセットして再描画（開きっぱなし対策）
 setInterval(() => {
   if (state.today.date !== todayStr()) {
-    state.today = { date: todayStr(), manualOrder: null, manualAdded: [] };
+    state.today = { date: todayStr(), manualOrder: null, manualAdded: [], updatedAt: nowISO() };
     commit();
   }
 }, 60000);
