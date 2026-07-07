@@ -1104,8 +1104,8 @@ function handleTaskDrop(dragId, targetId, mode) {
     ).sort((a, b) => a.sortOrder - b.sortOrder);
     const idx = sibs.findIndex(x => x.id === targetId);
     sibs.splice(mode === "before" ? idx : idx + 1, 0, drag);
-    sibs.forEach((x, i) => { x.sortOrder = i; });
-    touch(drag);
+    // 並び替えで位置がずれる兄弟タスクも同期対象にするため、sortOrderが変わったものはすべてtouchする
+    sibs.forEach((x, i) => { if (x.sortOrder !== i) touch(x); x.sortOrder = i; });
     commit();
   }
 }
@@ -1177,7 +1177,8 @@ function handleTaskDropMulti(dragIds, targetId, mode) {
       cascadeProject(t.id, t.projectId);
       touch(t);
     }
-    sibs.forEach((x, i) => { x.sortOrder = i; });
+    // 並び替えで位置がずれる兄弟タスクも同期対象にするため、sortOrderが変わったものはすべてtouchする
+    sibs.forEach((x, i) => { if (x.sortOrder !== i) touch(x); x.sortOrder = i; });
     selectedTaskIds.clear();
     commit();
     toast(`${valid.length}件をまとめて移動しました`);
@@ -1340,7 +1341,13 @@ function renderSidebar() {
       let idx = ids.indexOf(el.dataset.proj);
       if (mode === "after") idx += 1;
       ids.splice(idx, 0, dragId);
-      ids.forEach((id, i) => { const proj = getProject(id); if (proj) proj.sortOrder = i; });
+      // 並び替えで位置がずれるプロジェクトも同期対象にするため、sortOrderが変わったものはすべてtouchする
+      ids.forEach((id, i) => {
+        const proj = getProject(id);
+        if (!proj) return;
+        if (proj.sortOrder !== i) touch(proj);
+        proj.sortOrder = i;
+      });
       commit();
     });
   });
