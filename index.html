@@ -2279,6 +2279,8 @@ function openBulkEditModal() {
   const ids = [...selectedTaskIds];
   const tasks = ids.map(getTask).filter(Boolean);
   if (!tasks.length) return;
+  // 詳細パネルが開いたままだとモーダルと重なって紛らわしい（フィールドが読みにくく操作できないように見える）ため、先に閉じる
+  if (detailTaskId) { detailTaskId = null; renderDetailPanel(); }
   const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
     .map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   // 依存タスクの候補: 選択中のタスク同士は対象外（自己参照・循環の温床になりやすいため）
