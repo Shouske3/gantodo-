@@ -1110,6 +1110,80 @@ function handleTaskDrop(dragId, targetId, mode) {
   }
 }
 
+// dataTransferからドラッグ中のタスクid一覧を取り出す（複数選択中のドラッグはJSON配列、それ以外は単一idの配列）
+function parseDragIds(e) {
+  const raw = e.dataTransfer.getData("text/plain");
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [raw];
+  } catch {
+    return raw ? [raw] : [];
+  }
+}
+// 複数選択中のタスクをまとめてD&D移動: mode = "into"(まとめてサブタスク化) | "before" | "after"
+// 単一ドラッグ時のhandleTaskDrop()とは別関数にして、既存の単一移動の挙動・メッセージは変えない
+function handleTaskDropMulti(dragIds, targetId, mode) {
+  const target = getTask(targetId);
+  if (!target) return;
+  let skipped = 0;
+  const valid = [];
+  for (const id of new Set(dragIds)) {
+    if (id === targetId) continue;
+    const t = getTask(id);
+    if (!t || isDescendantOf(targetId, id)) { skipped++; continue; }
+    valid.push(t);
+  }
+  if (!valid.length) {
+    if (skipped) toast("自分自身やそのサブタスクの下へは移動できません", "warn");
+    return;
+  }
+  valid.sort((a, b) => a.sortOrder - b.sortOrder); // 元々の相互順序を維持したまま移動する
+
+  if (mode === "into") {
+    const maxHeight = Math.max(...valid.map(t => subtreeHeight(t.id)));
+    if (taskDepth(targetId) + 1 + maxHeight > 5) {
+      toast("サブタスクは5階層までです", "warn");
+      return;
+    }
+    const dragIdSet = new Set(valid.map(t => t.id));
+    const sibs = state.tasks.filter(x => x.parentTaskId === targetId && !x.deletedAt && !dragIdSet.has(x.id));
+    let nextOrder = sibs.length ? Math.max(...sibs.map(s => s.sortOrder)) + 1 : 0;
+    for (const t of valid) {
+      t.parentTaskId = targetId;
+      t.projectId = target.projectId || null;
+      t.sectionId = target.sectionId || null;
+      t.sortOrder = nextOrder++;
+      cascadeProject(t.id, t.projectId);
+      touch(t);
+    }
+    target.collapsed = false;
+    selectedTaskIds.clear();
+    commit();
+    toast(`${valid.length}件を「${target.title}」のサブタスクにしました`);
+  } else {
+    const dragIdSet = new Set(valid.map(t => t.id));
+    const sibs = state.tasks.filter(x =>
+      !x.deletedAt && !dragIdSet.has(x.id) &&
+      (x.parentTaskId || null) === (target.parentTaskId || null) &&
+      (x.projectId || null) === (target.projectId || null) &&
+      (x.sectionId || null) === (target.sectionId || null)
+    ).sort((a, b) => a.sortOrder - b.sortOrder);
+    const idx = sibs.findIndex(x => x.id === targetId);
+    sibs.splice(mode === "before" ? idx : idx + 1, 0, ...valid);
+    for (const t of valid) {
+      t.parentTaskId = target.parentTaskId || null;
+      t.projectId = target.projectId || null;
+      t.sectionId = target.sectionId || null;
+      cascadeProject(t.id, t.projectId);
+      touch(t);
+    }
+    sibs.forEach((x, i) => { x.sortOrder = i; });
+    selectedTaskIds.clear();
+    commit();
+    toast(`${valid.length}件をまとめて移動しました`);
+  }
+}
+
 // プロジェクト変更を全子孫タスクへ引き継ぐ
 function cascadeProject(taskId, projectId) {
   for (const c of state.tasks.filter(x => x.parentTaskId === taskId && !x.deletedAt)) {
@@ -1405,7 +1479,9 @@ function taskRowEl(t, opts = {}) {
     const clearMarks = () => row.classList.remove("drop-before", "drop-after", "drop-into");
     row.addEventListener("dragstart", e => {
       e.stopPropagation();
-      e.dataTransfer.setData("text/plain", t.id);
+      // 複数選択中の行をドラッグしたら、選択している全タスクをまとめて運ぶ
+      const ids = selectedTaskIds.has(t.id) && selectedTaskIds.size > 1 ? [...selectedTaskIds] : [t.id];
+      e.dataTransfer.setData("text/plain", JSON.stringify(ids));
       e.dataTransfer.effectAllowed = "move";
     });
     row.addEventListener("dragover", e => {
@@ -1425,7 +1501,9 @@ function taskRowEl(t, opts = {}) {
       const mode = row.classList.contains("drop-before") ? "before"
         : row.classList.contains("drop-after") ? "after" : "into";
       clearMarks();
-      handleTaskDrop(e.dataTransfer.getData("text/plain"), t.id, mode);
+      const ids = parseDragIds(e);
+      if (ids.length > 1) handleTaskDropMulti(ids, t.id, mode);
+      else handleTaskDrop(ids[0], t.id, mode);
     });
   }
 
@@ -2470,7 +2548,9 @@ function renderToday(body, actions) {
     row.appendChild(pp);
     // D&D: 上下端=実行順の並び替え / 中央=サブタスク化 / サブタスクを上下端に落とすと引き出し
     row.addEventListener("dragstart", e => {
-      e.dataTransfer.setData("text/plain", t.id);
+      // 複数選択中の行をドラッグしたら、選択している全タスクをまとめて運ぶ
+      const ids = selectedTaskIds.has(t.id) && selectedTaskIds.size > 1 ? [...selectedTaskIds] : [t.id];
+      e.dataTransfer.setData("text/plain", JSON.stringify(ids));
       e.dataTransfer.effectAllowed = "move";
     });
     const clearMarks = () => row.classList.remove("drop-before", "drop-after", "drop-into");
@@ -2489,21 +2569,30 @@ function renderToday(body, actions) {
       const mode = row.classList.contains("drop-before") ? "before"
         : row.classList.contains("drop-after") ? "after" : "into";
       clearMarks();
-      const dragId = e.dataTransfer.getData("text/plain");
-      if (!dragId || dragId === t.id) return;
-      if (mode === "into") { handleTaskDrop(dragId, t.id, "into"); return; } // サブタスク化
+      const dragIds = parseDragIds(e).filter(id => id !== t.id);
+      if (!dragIds.length) return;
+      if (mode === "into") { // サブタスク化（まとめて）
+        if (dragIds.length > 1) handleTaskDropMulti(dragIds, t.id, "into");
+        else handleTaskDrop(dragIds[0], t.id, "into");
+        return;
+      }
       const ids = ordered.map(x => x.id);
-      if (ids.includes(dragId)) {
-        // 今日リスト内の実行順並び替え（従来どおり）
-        const rest = ids.filter(x => x !== dragId);
+      if (dragIds.every(id => ids.includes(id))) {
+        // 今日リスト内の実行順並び替え（従来どおり。複数選択時は元の相互順序を保ったままブロックで移動）
+        const dragSet = new Set(dragIds);
+        const draggedInOrder = ids.filter(id => dragSet.has(id));
+        const rest = ids.filter(id => !dragSet.has(id));
         let pos = rest.indexOf(t.id);
         if (mode === "after") pos += 1;
-        rest.splice(pos, 0, dragId);
+        rest.splice(pos, 0, ...draggedInOrder);
         state.today.manualOrder = rest;
         commit();
+      } else if (dragIds.length > 1) {
+        // リスト外（サブタスク等）を含む複数選択のドロップ → まとめて構造変更
+        handleTaskDropMulti(dragIds, t.id, mode);
       } else {
         // リスト外（サブタスク等）からのドロップ → 構造の変更（トップレベルへ引き出し等）
-        handleTaskDrop(dragId, t.id, mode);
+        handleTaskDrop(dragIds[0], t.id, mode);
       }
     });
     listWrap.appendChild(row);
