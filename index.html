@@ -299,6 +299,7 @@ svg text { user-select: none; }
 }
 .dep-search-item:hover { background: var(--bg2); }
 .dep-search-proj { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+.task-id-badge { color: var(--text-faint); font-size: 11px; font-family: monospace; white-space: nowrap; }
 .dep-search-empty { padding: 8px 10px; font-size: 12px; color: var(--text-faint); }
 .date-field { display: flex; gap: 4px; align-items: center; }
 .date-field input[type="date"] { flex: 1; min-width: 0; }
@@ -497,9 +498,9 @@ svg text { user-select: none; }
           </div>
         </div>
         <div class="qa-row"><label>追加先</label><select id="qa-project" data-testid="qa-project"></select></div>
-        <div class="qa-row"><label>納期</label><input type="date" id="qa-due" data-testid="qa-due"><input type="time" id="qa-due-time" data-testid="qa-due-time" title="時刻（任意）" style="flex:0.8"></div>
+        <div class="qa-row"><label>納期</label><input type="date" id="qa-due" data-testid="qa-due"></div>
         <div class="qa-row"><label>開始日</label><input type="date" id="qa-start" data-testid="qa-start"></div>
-        <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"></div>
+        <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"><input type="time" id="qa-end-time" data-testid="qa-end-time" title="時刻（任意）" style="flex:0.8"></div>
         <div class="qa-row"><label>タグ</label><input id="qa-tags" data-testid="qa-tags" placeholder="カンマ区切り"></div>
       </div>
     </div>
@@ -534,6 +535,10 @@ let memoPreview = false;
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+// 同名タスクの区別用に表示する短縮ID（内部idの末尾6文字）
+function shortId(id) {
+  return (id || "").slice(-6);
 }
 function nowISO() { return new Date().toISOString(); }
 
@@ -696,6 +701,54 @@ async function fileDelete(id) {
     tx.onerror = () => rej(tx.error);
   });
 }
+
+/* ---- 添付ファイルの実体を同期ペイロードに含める（iPhone⇔PC間で画像等を共有するため） ----
+   Google Sheets/Apps Script側の負荷・速度を考えて合計サイズに上限を設け、
+   超過分は新しいものを優先してスキップする（次回以降の同期で改めて試みる） */
+const ATTACHMENT_SYNC_CAP_BYTES = 4 * 1024 * 1024; // base64換算で約4MBまで
+async function blobToBase64(blob) {
+  const buf = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  return btoa(binary);
+}
+function base64ToBlob(b64, mime) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime || "application/octet-stream" });
+}
+// 送信用: 生存タスクの添付を新しい順に集め、上限に収まる分だけbase64化する
+async function collectAttachmentFilesForSync() {
+  const metas = [];
+  for (const t of liveTasks()) for (const a of t.attachments || []) metas.push(a);
+  metas.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const files = [];
+  let total = 0, skipped = 0;
+  for (const a of metas) {
+    if (total + (a.size || 0) * 1.37 > ATTACHMENT_SYNC_CAP_BYTES) { skipped++; continue; }
+    try {
+      const blob = await fileGet(a.id);
+      if (!blob) continue;
+      const data = await blobToBase64(blob);
+      files.push({ id: a.id, mime: blob.type, data, createdAt: a.createdAt || nowISO() });
+      total += data.length;
+    } catch { skipped++; }
+  }
+  return { files, skipped };
+}
+// 受信用: ローカルにまだない実体だけIndexedDBへ保存する（内容は不変なので上書きしない）
+async function applyIncomingFiles(remoteFiles) {
+  if (!remoteFiles || !remoteFiles.length) return;
+  for (const f of remoteFiles) {
+    try {
+      if (await fileGet(f.id)) continue;
+      await fileSave(f.id, base64ToBlob(f.data, f.mime));
+    } catch { /* 個別の失敗は無視して続行 */ }
+  }
+}
 // 大きい画像は自動で縮小してから保存（最長辺1600px・JPEG化）
 async function maybeCompressImage(file) {
   if (!file.type.startsWith("image/") || file.type === "image/gif" || file.size < 300 * 1024) return file;
@@ -801,9 +854,18 @@ function hasTodayReason(t) {
   if (state.today.manualAdded.includes(t.id)) return true;
   return false;
 }
-// 「今日すること」の表示対象
+// 「今日すること」の表示対象（人に任せて返信待ちのタスクは一時的に外し、専用の置き場だけに表示する）
 function todayTasks() {
-  return activeTasks().filter(t => canStart(t) && hasTodayReason(t));
+  return activeTasks().filter(t => canStart(t) && hasTodayReason(t) && !t.waitingOnOther);
+}
+// 人に任せた（返信待ち）状態の切り替え
+function toggleDelegated(id) {
+  const t = getTask(id);
+  if (!t) return;
+  t.waitingOnOther = !t.waitingOnOther;
+  touch(t);
+  commit();
+  toast(t.waitingOnOther ? "🤝 人に任せた置き場に移動しました" : "🔓 通常のタスクに戻しました");
 }
 
 // 自動優先スコア（仕様 12.2）
@@ -811,10 +873,10 @@ function todayTasks() {
 // スコア計算そのものには時間指定の加点を含めない（time.js側のtimeOf()で判定・振り分けする）
 // 時間指定の加点: 00:00〜12:00は15点・12:00より後（〜24:00）は5点（時間指定がなければ0点）
 const SCORE_W = { due: 40, priority: 40, successor: 25, timeAM: 15, timePM: 5 };
-// 今日の時間指定（納期の時刻）。なければnull
+// 今日の時間指定（終了予定日の時刻）。なければnull
 function todayTimeOf(t) {
   const today = todayStr();
-  if (t.dueDate === today && t.dueTime) return t.dueTime;
+  if (t.endDate === today && t.endTime) return t.endTime;
   return null;
 }
 function timeBonusOf(t) {
@@ -851,6 +913,9 @@ function autoSortToday(tasks) {
   return tasks.slice().sort((a, b) => {
     const sa = autoPriorityScore(a), sb = autoPriorityScore(b);
     if (sb !== sa) return sb - sa;
+    // スコアが同点の場合は、終了日の時間指定が早い時間順（時間指定なしは後ろ）を優先条件にする
+    const ta = todayTimeOf(a) || "99:99", tb = todayTimeOf(b) || "99:99";
+    if (ta !== tb) return ta < tb ? -1 : 1;
     const da = a.dueDate || "9999-12-31", db = b.dueDate || "9999-12-31";
     if (da !== db) return da < db ? -1 : 1;
     return prioRank[a.priority] - prioRank[b.priority];
@@ -966,8 +1031,8 @@ function newTask(fields) {
     id: uid(), title: "", note: "", status: "active", progress: 0,
     projectId: null, sectionId: null, parentTaskId: null,
     priority: "none", tags: [], assignee: "", category: "",
-    startDate: null, endDate: null, dueDate: null, dueTime: null, earliestStartDate: null,
-    blockedBy: [], isMilestone: false, nextAction: null, repeat: null,
+    startDate: null, endDate: null, endTime: null, dueDate: null, earliestStartDate: null,
+    blockedBy: [], isMilestone: false, waitingOnOther: false, nextAction: null, repeat: null,
     attachments: [], collapsed: false,
     sortOrder: nextTopSortOrder(),
     createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null,
@@ -1286,9 +1351,10 @@ function taskRowEl(t, opts = {}) {
   const today = todayStr();
   if (t.dueDate) {
     const od = t.status === "active" && t.dueDate < today;
-    badges.push(`<span class="badge ${od ? "overdue" : "due"}">${t.isMilestone ? "◆" : "納期"} ${fmtDispW(t.dueDate)}${t.dueTime ? " " + t.dueTime : ""}${od ? " 超過" + diffDays(today, t.dueDate) + "日" : ""}</span>`);
+    badges.push(`<span class="badge ${od ? "overdue" : "due"}">${t.isMilestone ? "◆" : "納期"} ${fmtDispW(t.dueDate)}${od ? " 超過" + diffDays(today, t.dueDate) + "日" : ""}</span>`);
   }
-  if (t.startDate || t.endDate) badges.push(`<span class="badge">期間 ${fmtDisp(t.startDate)}〜${fmtDisp(t.endDate)}</span>`);
+  if (t.startDate || t.endDate) badges.push(`<span class="badge">期間 ${fmtDisp(t.startDate)}〜${fmtDisp(t.endDate)}${t.endTime ? " " + t.endTime : ""}</span>`);
+  if (t.waitingOnOther) badges.push(`<span class="badge waiting">🤝 人に任せ中</span>`);
   if (blocked) {
     const names = (t.blockedBy || []).map(id => getTask(id)).filter(p => p && !p.deletedAt && p.status !== "completed").map(p => p.title);
     badges.push(`<span class="badge blocked">🔒 ブロック中: ${esc(names.join(", "))}</span>`);
@@ -1633,13 +1699,13 @@ function renderDetailPanel() {
     x.id !== t.id && !(t.blockedBy || []).includes(x.id) && !wouldCycle(t.id, x.id));
   const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort((a, b) => a.sortOrder - b.sortOrder);
   const na = t.nextAction || {};
-  const statusLine = done ? "✅ 完了" : isBlocked(t) ? "🔒 ブロック中" : isWaiting(t) ? `⏳ ${fmtDisp(t.earliestStartDate)}から着手可` : "▶ 着手可能";
+  const statusLine = done ? "✅ 完了" : t.waitingOnOther ? "🤝 人に任せ中（返信待ち）" : isBlocked(t) ? "🔒 ブロック中" : isWaiting(t) ? `⏳ ${fmtDisp(t.earliestStartDate)}から着手可` : "▶ 着手可能";
 
   // 詳細設定を折りたたみ中は、設定済み項目をチップで要約表示
   const liveDeps = (t.blockedBy || []).filter(id => { const p = getTask(id); return p && !p.deletedAt; }).length;
   const chips = [];
-  if (t.startDate || t.endDate) chips.push("期間 " + fmtDisp(t.startDate) + "〜" + fmtDisp(t.endDate));
-  if (t.dueDate) chips.push((t.isMilestone ? "◆ " : "納期 ") + fmtDispW(t.dueDate) + (t.dueTime ? " " + t.dueTime : ""));
+  if (t.startDate || t.endDate) chips.push("期間 " + fmtDisp(t.startDate) + "〜" + fmtDisp(t.endDate) + (t.endTime ? " " + t.endTime : ""));
+  if (t.dueDate) chips.push((t.isMilestone ? "◆ " : "納期 ") + fmtDispW(t.dueDate));
   if (t.earliestStartDate) chips.push("⏳ " + fmtDisp(t.earliestStartDate) + "から");
   if (t.progress > 0) chips.push("進捗 " + t.progress + "%");
   if (liveDeps) chips.push("🔒 依存" + liveDeps + "件");
@@ -1659,15 +1725,17 @@ function renderDetailPanel() {
         <button class="flag-btn ${t.priority === "none" ? "sel" : ""}" data-p="none" data-testid="tm-prio-none" style="color:var(--text-dim)" title="優先度: なし">⚐</button>
       </div>
       <span class="dp-status">${statusLine}</span>
+      <button class="btn small ${t.waitingOnOther ? "primary" : ""}" data-testid="tm-delegate" title="人に任せた（返信待ち）に切り替え/解除">🤝</button>
       <button class="btn small dp-close-btn" data-testid="tm-close" style="margin-left:auto" title="閉じる（Esc・下にスワイプでも閉じます）">✕</button>
     </div>
     ${t.parentTaskId && getTask(t.parentTaskId) && !getTask(t.parentTaskId).deletedAt
       ? `<div class="dp-crumb" data-testid="dp-parent">↑ 親タスク: ${esc(getTask(t.parentTaskId).title)}</div>` : ""}
     <input id="tm-title" data-testid="tm-title" class="dp-title" value="${esc(t.title)}" placeholder="タイトル">
+    <div class="task-id-badge" data-testid="tm-id" style="margin:2px 0 6px" title="同名タスクを区別するための内部ID">#${shortId(t.id)}</div>
     ${(!noteEditing && (t.note || "").trim())
       ? `<div id="tm-note-view" data-testid="tm-note-view" style="margin:10px 0 2px" title="クリックで編集">${renderMarkdown(t.note, { interactive: true })}</div>`
       : `<textarea id="tm-note" data-testid="tm-note" placeholder="メモ（詳細）
-チェックリスト: - [ ] 項目 / 見出し: # 見出し / 太字: **太字**" style="margin:10px 0 2px">${esc(t.note || "")}</textarea>`}
+チェックリスト: () 項目 / 見出し: **見出し** / 太字: *太字*" style="margin:10px 0 2px">${esc(t.note || "")}</textarea>`}
     ${!detailExpanded ? `
     <div class="dp-chips" data-testid="tm-summary" title="クリックで詳細設定を開く">${chipsHtml}</div>` : `
     <div class="f-row">
@@ -1681,9 +1749,10 @@ function renderDetailPanel() {
           <button type="button" class="date-clear-btn" data-testid="tm-start-clear" title="クリア">✕</button>
         </div>
       </div>
-      <div class="f-col"><label>終了日</label>
-        <div class="date-field">
-          <input type="date" id="tm-end" data-testid="tm-end" value="${t.endDate || ""}">
+      <div class="f-col"><label>終了日・時刻</label>
+        <div style="display:flex;gap:6px">
+          <input type="date" id="tm-end" data-testid="tm-end" value="${t.endDate || ""}" style="flex:1.5;min-width:0">
+          <input type="time" id="tm-end-time" data-testid="tm-end-time" value="${t.endTime || ""}" style="flex:1;min-width:0" title="時刻（任意）">
           <button type="button" class="date-clear-btn" data-testid="tm-end-clear" title="クリア">✕</button>
         </div>
       </div>
@@ -1695,10 +1764,9 @@ function renderDetailPanel() {
           <button type="button" class="date-clear-btn" data-testid="tm-esd-clear" title="クリア">✕</button>
         </div>
       </div>
-      <div class="f-col"><label>納期（◆）・時刻</label>
-        <div style="display:flex;gap:6px">
-          <input type="date" id="tm-due" data-testid="tm-due" value="${t.dueDate || ""}" style="flex:1.5;min-width:0">
-          <input type="time" id="tm-due-time" data-testid="tm-due-time" value="${t.dueTime || ""}" style="flex:1;min-width:0" title="時刻（任意）">
+      <div class="f-col"><label>納期（◆）</label>
+        <div class="date-field">
+          <input type="date" id="tm-due" data-testid="tm-due" value="${t.dueDate || ""}">
           <button type="button" class="date-clear-btn" data-testid="tm-due-clear" title="クリア">✕</button>
         </div>
       </div>
@@ -1715,7 +1783,7 @@ function renderDetailPanel() {
       <label>依存タスク（完了するまで着手不可）</label>
       <div id="tm-deps" data-testid="tm-deps">${(t.blockedBy || []).map(id => {
         const p = getTask(id);
-        return p && !p.deletedAt ? `<span class="dep-chip" data-dep="${id}">🔒 ${esc(p.title)} <button data-testid="dep-remove">✕</button></span>` : "";
+        return p && !p.deletedAt ? `<span class="dep-chip" data-dep="${id}">🔒 ${esc(p.title)} <span class="task-id-badge">#${shortId(p.id)}</span> <button data-testid="dep-remove">✕</button></span>` : "";
       }).join("")}</div>
       <div class="dep-search">
         <input id="tm-dep-add" data-testid="tm-dep-add" placeholder="＋依存タスクを名前で検索して追加..." autocomplete="off">
@@ -1798,6 +1866,7 @@ function renderDetailPanel() {
     }, { passive: true });
   }
   $("[data-testid=tm-check]").onclick = () => toggleComplete(t.id);
+  $("[data-testid=tm-delegate]").onclick = () => toggleDelegated(t.id);
   $("[data-testid=tm-complete]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delete]").onclick = () => {
     if (!confirm(`「${t.title}」を削除しますか？（30日間はゴミ箱から復元可）`)) return;
@@ -1856,7 +1925,9 @@ function renderDetailPanel() {
         const lines = (t.note || "").split("\n");
         const i = +cb.dataset.mdline;
         if (lines[i] === undefined) return;
-        lines[i] = cb.checked ? lines[i].replace(/\[ \]/, "[x]") : lines[i].replace(/\[[xX]\]/, "[ ]");
+        lines[i] = cb.checked
+          ? lines[i].replace(/\[ \]/, "[x]").replace(/\(\s?\)/, "(x)")
+          : lines[i].replace(/\[[xX]\]/, "[ ]").replace(/\([xX]\)/, "()");
         apply(() => { t.note = lines.join("\n"); });
       };
     });
@@ -1965,16 +2036,16 @@ function renderDetailPanel() {
       else if (v && t.startDate && v < t.startDate) t.startDate = v;
     });
   };
+  $("#tm-end-time").onchange = e => liteApply(() => { t.endTime = e.target.value || null; });
   $("#tm-due").onchange = e => liteApply(() => { t.dueDate = e.target.value || null; });
-  $("#tm-due-time").onchange = e => liteApply(() => { t.dueTime = e.target.value || null; });
   $("#tm-esd").onchange = e => liteApply(() => { t.earliestStartDate = e.target.value || null; });
-  for (const id of ["tm-start", "tm-end", "tm-due", "tm-due-time", "tm-esd"]) refreshOnBlur($("#" + id));
+  for (const id of ["tm-start", "tm-end", "tm-end-time", "tm-due", "tm-esd"]) refreshOnBlur($("#" + id));
   // 日付クリアボタン: iOSのネイティブ日付ピッカーには一度設定した値を空に戻す手段がないため、
   // 明示的なクリアボタンで対応する（ボタン操作なのでフルre-renderのapplyで即時反映してよい）
   $("[data-testid=tm-start-clear]").onclick = () => apply(() => { t.startDate = null; });
-  $("[data-testid=tm-end-clear]").onclick = () => apply(() => { t.endDate = null; });
+  $("[data-testid=tm-end-clear]").onclick = () => apply(() => { t.endDate = null; t.endTime = null; });
   $("[data-testid=tm-esd-clear]").onclick = () => apply(() => { t.earliestStartDate = null; });
-  $("[data-testid=tm-due-clear]").onclick = () => apply(() => { t.dueDate = null; t.dueTime = null; });
+  $("[data-testid=tm-due-clear]").onclick = () => apply(() => { t.dueDate = null; });
   $("#tm-progress").oninput = () => { $("#tm-prog-val").textContent = $("#tm-progress").value + "%"; };
   $("#tm-progress").onchange = e => apply(() => { t.progress = Number(e.target.value); });
   $("#tm-milestone").onchange = e => apply(() => { t.isMilestone = e.target.checked; });
@@ -1994,11 +2065,11 @@ function renderDetailPanel() {
     const listEl = $("#tm-dep-add-list");
     const renderOptions = () => {
       const q = searchEl.value.trim().toLowerCase();
-      const matches = (q ? depCandidates.filter(x => x.title.toLowerCase().includes(q)) : depCandidates).slice(0, 30);
+      const matches = (q ? depCandidates.filter(x => x.title.toLowerCase().includes(q) || shortId(x.id).includes(q)) : depCandidates).slice(0, 30);
       if (!matches.length) {
         listEl.innerHTML = `<div class="dep-search-empty">該当するタスクがありません</div>`;
       } else {
-        listEl.innerHTML = matches.map(x => `<div class="dep-search-item" data-id="${x.id}">${esc(x.title)}${x.projectId ? `<span class="dep-search-proj">${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</div>`).join("");
+        listEl.innerHTML = matches.map(x => `<div class="dep-search-item" data-id="${x.id}"><span>${esc(x.title)}${x.projectId ? `<span class="dep-search-proj"> ・ ${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</span><span class="task-id-badge">#${shortId(x.id)}</span></div>`).join("");
         listEl.querySelectorAll("[data-id]").forEach(el => {
           el.onclick = () => {
             const id = el.dataset.id;
@@ -2155,18 +2226,20 @@ function openBulkEditModal() {
       <div class="bulk-inputs"><input type="date" data-testid="bulk-start"></div>
     </div>
     <div class="bulk-field" data-field="end">
-      <label><input type="checkbox" data-testid="bulk-end-on"> 終了日</label>
-      <div class="bulk-inputs"><input type="date" data-testid="bulk-end"></div>
+      <label><input type="checkbox" data-testid="bulk-end-on"> 終了日・時刻</label>
+      <div class="bulk-inputs">
+        <input type="date" data-testid="bulk-end" style="flex:1.4">
+        <input type="time" data-testid="bulk-end-time" style="flex:1">
+      </div>
     </div>
     <div class="bulk-field" data-field="esd">
       <label><input type="checkbox" data-testid="bulk-esd-on"> 開始可能日</label>
       <div class="bulk-inputs"><input type="date" data-testid="bulk-esd"></div>
     </div>
     <div class="bulk-field" data-field="due">
-      <label><input type="checkbox" data-testid="bulk-due-on"> 納期・時刻</label>
+      <label><input type="checkbox" data-testid="bulk-due-on"> 納期</label>
       <div class="bulk-inputs">
         <input type="date" data-testid="bulk-due" style="flex:1.4">
-        <input type="time" data-testid="bulk-due-time" style="flex:1">
       </div>
     </div>
     <div class="bulk-field" data-field="progress">
@@ -2181,7 +2254,7 @@ function openBulkEditModal() {
       <div class="bulk-inputs" style="flex-direction:column;align-items:stretch">
         <input data-testid="bulk-deps-search" data-no-autocheck placeholder="タスク名で検索..." autocomplete="off">
         <select multiple size="4" data-testid="bulk-deps" style="width:100%;margin-top:4px">
-          ${depCandidates.map(x => `<option value="${x.id}">${esc(x.title)}${x.projectId ? "（" + esc(getProject(x.projectId)?.name || "") + "）" : ""}</option>`).join("")}
+          ${depCandidates.map(x => `<option value="${x.id}">${esc(x.title)}${x.projectId ? "（" + esc(getProject(x.projectId)?.name || "") + "）" : ""} #${shortId(x.id)}</option>`).join("")}
         </select>
       </div>
     </div>
@@ -2280,11 +2353,14 @@ function openBulkEditModal() {
         changed = true;
       }
       if (on("start")) { t.startDate = $("[data-testid=bulk-start]").value || null; changed = true; }
-      if (on("end")) { t.endDate = $("[data-testid=bulk-end]").value || null; changed = true; }
+      if (on("end")) {
+        t.endDate = $("[data-testid=bulk-end]").value || null;
+        t.endTime = t.endDate ? ($("[data-testid=bulk-end-time]").value || null) : null;
+        changed = true;
+      }
       if (on("esd")) { t.earliestStartDate = $("[data-testid=bulk-esd]").value || null; changed = true; }
       if (on("due")) {
         t.dueDate = $("[data-testid=bulk-due]").value || null;
-        t.dueTime = t.dueDate ? ($("[data-testid=bulk-due-time]").value || null) : null;
         changed = true;
       }
       if (on("progress")) { t.progress = Number($("[data-testid=bulk-progress]").value); changed = true; }
@@ -2439,6 +2515,24 @@ function renderToday(body, actions) {
   if (soon.length) {
     body.insertAdjacentHTML("beforeend", `<div class="today-head">🔒 待機中（着手不可のため一覧外）</div>`);
     for (const t of soon) body.appendChild(taskRowEl(t, { showProject: true }));
+  }
+
+  // 人に任せた（返信待ち）タスクの一時置き場: ボールを相手に渡している間は着手中の一覧から外して、ここにまとめておく
+  const delegated = activeTasks().filter(t => t.waitingOnOther);
+  if (delegated.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="today-head" data-testid="delegated-head">🤝 人に任せた（返信待ち・${delegated.length}件）</div>`);
+    for (const t of delegated) {
+      const row = taskRowEl(t, { showProject: true });
+      row.setAttribute("data-testid", "delegated-row");
+      const backBtn = document.createElement("button");
+      backBtn.className = "btn small";
+      backBtn.setAttribute("data-testid", "delegate-release-btn");
+      backBtn.textContent = "🔓 解除";
+      backBtn.style.cssText = "margin-top:1px;flex:none";
+      backBtn.onclick = e => { e.stopPropagation(); toggleDelegated(t.id); };
+      row.appendChild(backBtn);
+      body.appendChild(row);
+    }
   }
 }
 
@@ -2923,22 +3017,35 @@ function attachGanttDrag(svg, dw, rangeStart) {
 ========================================================*/
 // 最小Markdownレンダラ（見出し・太字・斜体・リスト・チェックボックス・コード・リンク）
 // opts.interactive: チェックボックスをクリック可能にする（data-mdline=元テキストの行番号）
+// 記法: チェックリスト=() /(x)、見出し=行全体を**テキスト**、太字=*テキスト*（簡略化した独自記法）
+// 旧記法（- [ ] 、# 見出し、**太字**インライン）も後方互換として引き続き解釈する
 function renderMarkdown(src, opts = {}) {
   const lines = String(src || "").split("\n");
   let html = "", inList = false;
   const inline = s => esc(s)
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") // 旧: インライン太字（後方互換）
+    .replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>") // 新: 太字
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, `<a href="$2" target="_blank" rel="noopener">$1</a>`);
   const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
     let mch;
-    if ((mch = line.match(/^(#{1,3})\s+(.*)/))) {
+    if ((mch = line.trim().match(/^\*\*(.+)\*\*$/))) {
+      // 新: 見出し（行全体が**テキスト**）
+      closeList();
+      html += `<h3>${inline(mch[1])}</h3>`;
+    } else if ((mch = line.match(/^(#{1,3})\s+(.*)/))) {
+      // 旧: 見出し（#の数で階層、後方互換）
       closeList();
       html += `<h${mch[1].length}>${inline(mch[2])}</h${mch[1].length}>`;
+    } else if ((mch = line.match(/^\s*\(([ xX]?)\)\s+(.*)/))) {
+      // 新: チェックリスト（）/(x)
+      if (!inList) { html += "<ul>"; inList = true; }
+      const done = mch[1] !== "" && mch[1] !== " ";
+      html += `<li class="chk"><input type="checkbox" ${opts.interactive ? `data-mdline="${li}"` : "disabled"} ${done ? "checked" : ""}> ${done ? `<span style="text-decoration:line-through;color:var(--text-faint)">${inline(mch[2])}</span>` : inline(mch[2])}</li>`;
     } else if ((mch = line.match(/^\s*-\s+\[([ xX])\]\s+(.*)/))) {
+      // 旧: チェックリスト（- [ ] 、後方互換）
       if (!inList) { html += "<ul>"; inList = true; }
       const done = mch[1] !== " ";
       html += `<li class="chk"><input type="checkbox" ${opts.interactive ? `data-mdline="${li}"` : "disabled"} ${done ? "checked" : ""}> ${done ? `<span style="text-decoration:line-through;color:var(--text-faint)">${inline(mch[2])}</span>` : inline(mch[2])}</li>`;
@@ -3008,7 +3115,7 @@ function renderMemos(body, actions) {
       </div>
       ${memoPreview
         ? `<div id="memo-preview" data-testid="memo-preview">${renderMarkdown(memo.body)}</div>`
-        : `<textarea id="memo-body" data-testid="memo-body" placeholder="# 見出し、**太字**、- リスト、- [ ] チェックボックス などMarkdown対応">${esc(memo.body)}</textarea>`}
+        : `<textarea id="memo-body" data-testid="memo-body" placeholder="**見出し**、*太字*、- リスト、() チェックボックス などMarkdown対応">${esc(memo.body)}</textarea>`}
     `;
     const titleEl = editor.querySelector("#memo-title");
     titleEl.onchange = () => { memo.title = titleEl.value.trim() || "無題のメモ"; memo.updatedAt = nowISO(); save(); renderSidebar(); };
@@ -3353,7 +3460,7 @@ function importTickTickRows(rows, opts) {
     let startDate = null, endDate = null, dueDate = rawDue;
     if (rawStart && rawDue && rawStart < rawDue) { startDate = rawStart; endDate = rawDue; }
     else if (rawStart && !rawDue) { dueDate = rawStart; }
-    const dueTime = dueDate && r.allDay === "false" ? ttTimeOnly(r.dueDate || r.startDate, r.timezone) : null;
+    const endTime = endDate && r.allDay === "false" ? ttTimeOnly(r.dueDate || r.startDate, r.timezone) : null;
     const t = {
       id: uid(), title: r.title || "(無題)", note: ttCapNote(rawNote, cap),
       status: sf.status, progress: sf.status === "completed" ? 100 : 0,
@@ -3361,7 +3468,7 @@ function importTickTickRows(rows, opts) {
       priority: TT_PRIORITY[r.priority] || "none",
       tags: r.tags ? r.tags.split(",").map(s => s.trim()).filter(Boolean) : [],
       assignee: "", category: "",
-      startDate, endDate, dueDate, dueTime, earliestStartDate: null,
+      startDate, endDate, endTime, dueDate, earliestStartDate: null,
       blockedBy: [], isMilestone: false, nextAction: null,
       attachments: [], collapsed: false,
       repeat: parseRRuleToRepeat(r.repeat),
@@ -3479,11 +3586,12 @@ async function pushStateToGas() {
   const { gasUrl, gasKey } = state.settings;
   if (!gasUrl) return { ok: false, error: "not configured" };
   try {
+    const { files } = await collectAttachmentFilesForSync();
     const res = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ key: gasKey, action: "push", data: {
         projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
-        resetAt: state.resetAt,
+        files, resetAt: state.resetAt,
       } }),
     });
     const json = await res.json();
@@ -3536,12 +3644,15 @@ async function syncNow(statusEl, opts = {}) {
       state.tasks = mergeById(state.tasks, r.tasks, effectiveResetAt);
       state.memos = mergeById(state.memos, r.memos, effectiveResetAt);
       state.resetAt = effectiveResetAt;
+      await applyIncomingFiles(r.files); // 相手が持つ添付の実体でローカルにまだないものを取り込む
     }
+    const { files, skipped } = await collectAttachmentFilesForSync();
+    if (skipped && !quiet) toast(`⚠ 添付ファイルが大きすぎるため${skipped}件は今回同期されませんでした`, "warn");
     const pushRes = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ key: gasKey, action: "push", data: {
         projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
-        resetAt: state.resetAt,
+        files, resetAt: state.resetAt,
       } }),
     });
     const push = await pushRes.json();
@@ -3604,12 +3715,12 @@ function qaCreate() {
   // state.today.manualAddedは端末ローカルの一覧で同期対象外のため、日付なしのままだと
   // 他端末では「今日やる理由」が無く表示されない（納期はタスク本体の同期対象フィールド）。
   if (!due && view.type === "today") due = todayStr();
-  const dueTime = document.getElementById("qa-due-time").value || null;
   const start = document.getElementById("qa-start").value || null;
   let end = document.getElementById("qa-end").value || null;
   if (start && end && end < start) end = start;
+  const endTime = document.getElementById("qa-end-time").value || null;
   const tags = document.getElementById("qa-tags").value.split(",").map(s => s.trim()).filter(Boolean);
-  const t = newTask({ title, projectId: pid, priority: qa.priority, dueDate: due, dueTime: due ? dueTime : null, startDate: start, endDate: end, tags });
+  const t = newTask({ title, projectId: pid, priority: qa.priority, dueDate: due, startDate: start, endDate: end, endTime: end ? endTime : null, tags });
   // 「今日すること」はスコア順の独自並びのため、新規タスクを一番上に固定するには
   // 手動並び順（manualOrder）の先頭に差し込む（他は今までの並びを維持）
   if (view.type === "today") {
@@ -3619,7 +3730,7 @@ function qaCreate() {
   // 入力と単発オプションをリセット（追加先の選択は維持）
   input.value = "";
   qa.priority = "none";
-  for (const id of ["qa-due", "qa-due-time", "qa-start", "qa-end", "qa-tags"]) document.getElementById(id).value = "";
+  for (const id of ["qa-due", "qa-start", "qa-end", "qa-end-time", "qa-tags"]) document.getElementById(id).value = "";
   document.getElementById("qa-popover").classList.remove("open");
   commit();
   toast(`「${t.title}」を追加しました`);
