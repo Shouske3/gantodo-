@@ -308,6 +308,11 @@ svg text { user-select: none; }
   border: 1px solid var(--border); border-radius: 6px; background: var(--bg3); color: var(--text-dim); cursor: pointer;
 }
 .date-clear-btn:hover { color: var(--danger); border-color: var(--danger); }
+.date-compact-btn {
+  flex: 1; min-width: 0; height: 32px; padding: 0 8px; font-size: 13px; text-align: left;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg3); color: var(--text); cursor: pointer;
+}
+.date-compact-btn:hover { border-color: var(--accent); }
 .subtask-line { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; }
 .subtask-line .task-check { margin-top: 2px; } /* 複数行のタイトルでも先頭行のテキストに揃える */
 .subtask-line .st-title { flex: 1; cursor: pointer; }
@@ -527,6 +532,7 @@ let view = { type: "today" };          // 現在のビュー
 let detailTaskId = null;               // 右パネルで開いているタスク
 let noteEditing = false;               // タスクメモ欄が編集モードか
 let detailExpanded = false;            // 詳細設定（プロジェクト・日付等）を展開しているか
+let editingDateField = null;           // 開始日/終了日/開始可能日/納期のうち、フル編集（ネイティブ日付ピッカー）を表示中のもの（それ以外は年を省いたM/D表示）
 const selectedTaskIds = new Set();     // Ctrl/Cmd+クリックで複数選択中のタスクid（セッション内のみ・非永続）
 let ganttZoom = "day";                  // day | week | month
 let ganttScrollMemo = null;             // ガントの横スクロール位置（再描画で失わないよう記憶）
@@ -1757,7 +1763,7 @@ function openPrompt(label, defVal, cb) {
 
 /* ---- タスク詳細: 右サイドパネル（TickTick風・自動保存） ---- */
 function openTaskModal(taskId) { // 呼び出し箇所互換のため関数名は維持
-  if (taskId !== detailTaskId) noteEditing = false;
+  if (taskId !== detailTaskId) { noteEditing = false; editingDateField = null; }
   detailTaskId = taskId;
   renderDetailPanel();
 }
@@ -1777,6 +1783,10 @@ function renderDetailPanel() {
   }
   panel.classList.add("open");
   const done = t.status === "completed";
+  // 開始日/終了日/開始可能日/納期: 通常は年を省いたM/D表示（コンパクト）、クリックでネイティブ日付ピッカー（年も編集可）を表示する
+  const dateWidget = (key, testid, value, style = "") => value && editingDateField !== key
+    ? `<button type="button" class="date-compact-btn" data-testid="${testid}-compact" data-date-key="${key}" style="${style}">${fmtDisp(value)}</button>`
+    : `<input type="date" id="${testid}" data-testid="${testid}" value="${value || ""}" style="${style}">`;
   const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
     .map(p => `<option value="${p.id}" ${t.projectId === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("");
   const secOpts = `<option value="">（なし）</option>` + state.sections.filter(s => s.projectId === t.projectId)
@@ -1831,13 +1841,13 @@ function renderDetailPanel() {
     <div class="f-row">
       <div class="f-col"><label>開始日</label>
         <div class="date-field">
-          <input type="date" id="tm-start" data-testid="tm-start" value="${t.startDate || ""}">
+          ${dateWidget("start", "tm-start", t.startDate)}
           <button type="button" class="date-clear-btn" data-testid="tm-start-clear" title="クリア">✕</button>
         </div>
       </div>
       <div class="f-col"><label>終了日・時刻</label>
         <div style="display:flex;gap:6px">
-          <input type="date" id="tm-end" data-testid="tm-end" value="${t.endDate || ""}" style="flex:1.5;min-width:0">
+          ${dateWidget("end", "tm-end", t.endDate, "flex:1.5;min-width:0")}
           <input type="time" id="tm-end-time" data-testid="tm-end-time" value="${t.endTime || ""}" style="flex:1;min-width:0" title="時刻（任意）">
           <button type="button" class="date-clear-btn" data-testid="tm-end-clear" title="クリア">✕</button>
         </div>
@@ -1846,13 +1856,13 @@ function renderDetailPanel() {
     <div class="f-row">
       <div class="f-col"><label>開始可能日</label>
         <div class="date-field">
-          <input type="date" id="tm-esd" data-testid="tm-esd" value="${t.earliestStartDate || ""}">
+          ${dateWidget("esd", "tm-esd", t.earliestStartDate)}
           <button type="button" class="date-clear-btn" data-testid="tm-esd-clear" title="クリア">✕</button>
         </div>
       </div>
       <div class="f-col"><label>納期（◆）</label>
         <div class="date-field">
-          <input type="date" id="tm-due" data-testid="tm-due" value="${t.dueDate || ""}">
+          ${dateWidget("due", "tm-due", t.dueDate)}
           <button type="button" class="date-clear-btn" data-testid="tm-due-clear" title="クリア">✕</button>
         </div>
       </div>
@@ -2103,7 +2113,10 @@ function renderDetailPanel() {
   const refreshOnBlur = el => el.addEventListener("blur", () => {
     setTimeout(() => { if (detailTaskId === t.id && !panel.contains(document.activeElement)) renderDetailPanel(); }, 100);
   });
-  $("#tm-start").onchange = e => {
+  // 開始日/終了日/開始可能日/納期はコンパクト表示中（値ありでeditingDateFieldと不一致）だとinputが存在しないため、
+  // 存在チェックしてから紐づける（存在しないままonchange=を代入すると例外で以降の紐づけ処理全体が止まってしまう）
+  const tmStart = $("#tm-start");
+  if (tmStart) tmStart.onchange = e => {
     const v = e.target.value || null;
     liteApply(() => {
       t.startDate = v;
@@ -2114,7 +2127,8 @@ function renderDetailPanel() {
       if (conflict.length) toast(`⚠ 開始日が先行タスク「${conflict[0].title}」の終了日より前です`, "warn");
     }
   };
-  $("#tm-end").onchange = e => {
+  const tmEnd = $("#tm-end");
+  if (tmEnd) tmEnd.onchange = e => {
     const v = e.target.value || null;
     liteApply(() => {
       t.endDate = v;
@@ -2122,10 +2136,27 @@ function renderDetailPanel() {
       else if (v && t.startDate && v < t.startDate) t.startDate = v;
     });
   };
-  $("#tm-end-time").onchange = e => liteApply(() => { t.endTime = e.target.value || null; });
-  $("#tm-due").onchange = e => liteApply(() => { t.dueDate = e.target.value || null; });
-  $("#tm-esd").onchange = e => liteApply(() => { t.earliestStartDate = e.target.value || null; });
-  for (const id of ["tm-start", "tm-end", "tm-end-time", "tm-due", "tm-esd"]) refreshOnBlur($("#" + id));
+  $("#tm-end-time").onchange = e => liteApply(() => { t.endTime = e.target.value || null; }); // 時刻欄は常にinput
+  const tmDue = $("#tm-due");
+  if (tmDue) tmDue.onchange = e => liteApply(() => { t.dueDate = e.target.value || null; });
+  const tmEsd = $("#tm-esd");
+  if (tmEsd) tmEsd.onchange = e => liteApply(() => { t.earliestStartDate = e.target.value || null; });
+  for (const id of ["tm-start", "tm-end", "tm-end-time", "tm-due", "tm-esd"]) {
+    const el = $("#" + id);
+    if (el) refreshOnBlur(el); // コンパクト表示中（<input>が存在しない）はスキップ
+  }
+  // 日付のコンパクト表示（年を省いたM/D）→クリックでネイティブ日付ピッカー（年も編集可）に切り替える
+  panel.querySelectorAll(".date-compact-btn").forEach(btn => {
+    btn.onclick = () => {
+      editingDateField = btn.dataset.dateKey;
+      renderDetailPanel();
+      const input = $("#tm-" + editingDateField);
+      if (input) {
+        input.focus();
+        if (input.showPicker) { try { input.showPicker(); } catch { /* 未対応ブラウザは無視 */ } }
+      }
+    };
+  });
   // 日付クリアボタン: iOSのネイティブ日付ピッカーには一度設定した値を空に戻す手段がないため、
   // 明示的なクリアボタンで対応する（ボタン操作なのでフルre-renderのapplyで即時反映してよい）
   $("[data-testid=tm-start-clear]").onclick = () => apply(() => { t.startDate = null; });
