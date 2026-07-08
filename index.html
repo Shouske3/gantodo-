@@ -1039,15 +1039,78 @@ function newTask(fields) {
     priority: "none", tags: [], assignee: "", category: "",
     startDate: null, endDate: null, endTime: null, dueDate: null, earliestStartDate: null,
     blockedBy: [], isMilestone: false, waitingOnOther: false, nextAction: null, repeat: null,
-    attachments: [], collapsed: false,
+    attachments: [], collapsed: false, gcalEventId: null,
     sortOrder: nextTopSortOrder(),
     createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null,
     ...fields,
   };
   state.tasks.push(t);
+  maybeQueueCalendarSync(t);
   return t;
 }
-function touch(t) { t.updatedAt = nowISO(); }
+function touch(t) {
+  t.updatedAt = nowISO();
+  maybeQueueCalendarSync(t);
+}
+// 終了日時刻(endDate+endTime)があるタスク、またはカレンダーに連携済みのタスクだけ同期対象にする
+// （無関係な編集のたびに毎回GASへ問い合わせるのを避けるための絞り込み）。
+// newTask()・TickTickインポートなどtouch()を経由しない新規作成パスからも呼ぶ。
+function maybeQueueCalendarSync(t) {
+  if ((t.endDate && t.endTime) || t.gcalEventId) queueCalendarSync(t.id);
+}
+
+/* ---- Googleカレンダー連携: 終了日時刻(endDate+endTime)をその時刻から1時間の予定として自動反映 ----
+   GAS側(gas/Code.gs)のgcalUpsert/gcalDeleteアクションを使う。既存の同期用エンドポイントを流用するため
+   別途OAuth設定は不要（GASが「自分として実行」する権限でカレンダーを操作する） */
+let calendarSyncTimer = null;
+const pendingCalendarSyncIds = new Set();
+function queueCalendarSync(taskId) {
+  if (!state.settings.gasUrl) return;
+  pendingCalendarSyncIds.add(taskId);
+  clearTimeout(calendarSyncTimer);
+  calendarSyncTimer = setTimeout(flushCalendarSync, 3000); // 数秒だけデバウンス（メインの15秒同期より短く「リアルタイム」寄りに）
+}
+async function flushCalendarSync() {
+  const ids = [...pendingCalendarSyncIds];
+  pendingCalendarSyncIds.clear();
+  for (const id of ids) {
+    const t = getTask(id);
+    if (t) await syncTaskToCalendar(t);
+  }
+}
+async function syncTaskToCalendar(t) {
+  const { gasUrl, gasKey } = state.settings;
+  if (!gasUrl) return;
+  try {
+    if (t.deletedAt || !t.endDate || !t.endTime) {
+      // 予定が不要になった（削除された・終了日時刻がなくなった）→ 既存の連携があれば解除
+      if (t.gcalEventId) {
+        const eventId = t.gcalEventId;
+        t.gcalEventId = null;
+        t.updatedAt = nowISO();
+        save();
+        await fetch(gasUrl, {
+          method: "POST", headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify({ key: gasKey, action: "gcalDelete", eventId }),
+        });
+      }
+      return;
+    }
+    const startISO = `${t.endDate}T${t.endTime}:00`;
+    const res = await fetch(gasUrl, {
+      method: "POST", headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title, startISO, durationMinutes: 60 }),
+    });
+    const json = await res.json();
+    if (json.eventId && json.eventId !== t.gcalEventId) {
+      t.gcalEventId = json.eventId;
+      t.updatedAt = nowISO();
+      save();
+    }
+  } catch (e) {
+    // 通信エラーは静かに無視（次にこのタスクがtouchされた時に再試行される）
+  }
+}
 
 // taskId が ancestorId の子孫かどうか
 function isDescendantOf(taskId, ancestorId) {
@@ -3603,7 +3666,7 @@ function importTickTickRows(rows, opts) {
       tags: r.tags ? r.tags.split(",").map(s => s.trim()).filter(Boolean) : [],
       assignee: "", category: "",
       startDate, endDate, endTime, dueDate, earliestStartDate: null,
-      blockedBy: [], isMilestone: false, nextAction: null,
+      blockedBy: [], isMilestone: false, nextAction: null, gcalEventId: null,
       attachments: [], collapsed: false,
       repeat: parseRRuleToRepeat(r.repeat),
       sortOrder: state.tasks.length + toCreate.length,
@@ -3620,6 +3683,7 @@ function importTickTickRows(rows, opts) {
     delete t.ttParentId;
   }
   state.tasks.push(...toCreate);
+  for (const t of toCreate) maybeQueueCalendarSync(t);
   fixSubtaskProjects(state.tasks); // 親子でプロジェクトがずれていれば補正
   return { created: toCreate.length, skipped, projects: new Set(toCreate.map(x => x.projectId)).size };
 }
