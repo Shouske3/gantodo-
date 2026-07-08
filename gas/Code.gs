@@ -42,21 +42,34 @@ function doPost(e) {
     return json_({ ok: true, savedAt: new Date().toISOString() });
   }
 
-  // Googleカレンダー連携: タスクの終了日時刻(endDate+endTime)を、その時刻から1時間の予定として
+  // Googleカレンダー連携: タスクの終了日時刻(endDate+endTime)があれば、その時刻から1時間の予定を、
+  // 時刻指定が無く開始日・終了日だけあれば開始日〜終了日の終日の予定を、
   // 専用の「GanTODO」カレンダー（無ければ自動作成）に作成/更新する。既存のeventIdがあれば更新、なければ新規作成。
   if (req.action === "gcalUpsert") {
     const cal = getGanTodoCalendar_();
-    const start = new Date(req.startISO);
-    const end = new Date(start.getTime() + (req.durationMinutes || 60) * 60000);
     let event = null;
     if (req.eventId) {
       try { event = cal.getEventById(req.eventId); } catch (err) { event = null; }
     }
-    if (event) {
-      event.setTime(start, end);
-      event.setTitle(req.title || "(無題)");
+    if (req.allDay) {
+      const start = parseDateOnly_(req.startDate);
+      // Calendar APIの終日予定の終了日は排他的（翌日扱い）なので+1日する
+      const endExclusive = new Date(parseDateOnly_(req.endDate).getTime() + 24 * 60 * 60 * 1000);
+      if (event) {
+        event.setAllDayDates(start, endExclusive);
+        event.setTitle(req.title || "(無題)");
+      } else {
+        event = cal.createAllDayEvent(req.title || "(無題)", start, endExclusive);
+      }
     } else {
-      event = cal.createEvent(req.title || "(無題)", start, end);
+      const start = new Date(req.startISO);
+      const end = new Date(start.getTime() + (req.durationMinutes || 60) * 60000);
+      if (event) {
+        event.setTime(start, end);
+        event.setTitle(req.title || "(無題)");
+      } else {
+        event = cal.createEvent(req.title || "(無題)", start, end);
+      }
     }
     return json_({ eventId: event.getId() });
   }
@@ -81,6 +94,13 @@ function getGanTodoCalendar_() {
   const NAME = "GanTODO";
   const cals = CalendarApp.getCalendarsByName(NAME);
   return cals.length ? cals[0] : CalendarApp.createCalendar(NAME);
+}
+
+// "YYYY-MM-DD"をスクリプトのタイムゾーンに依存せず正しい日付のDateにする
+// （new Date("YYYY-MM-DD")はUTC解釈されるため、実行環境によって前後の日にずれることがある）
+function parseDateOnly_(s) {
+  const parts = s.split("-").map(Number);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
 }
 
 // カレンダー権限を許可するための手動実行用関数。
