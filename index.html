@@ -1889,7 +1889,12 @@ function renderDetailPanel() {
     <div class="f-row"><div class="f-col">
       <label>次回アクション・ステータス</label>
       <input id="tm-na-what" data-testid="tm-na-what" placeholder="何をするか" value="${esc(na.what || "")}">
-      <input id="tm-na-status" data-testid="tm-na-status" placeholder="ステータス（自由記述、例：連絡待ち）" value="${esc(na.status || "")}" style="margin-top:4px">
+      <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+        <input id="tm-na-status" data-testid="tm-na-status" placeholder="ステータス（自由記述、例：連絡待ち）" value="${esc(na.status || "")}" style="flex:1;min-width:0">
+        <label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:4px;white-space:nowrap">
+          <input type="checkbox" id="tm-na-waiting" data-testid="tm-na-waiting" ${t.waitingOnOther ? "checked" : ""}> 🤝対応待ち
+        </label>
+      </div>
     </div></div>
     <div class="f-row"><div class="f-col">
       <label>タグ（カンマ区切り）</label><input id="tm-tags" data-testid="tm-tags" value="${esc((t.tags || []).join(", "))}">
@@ -2213,6 +2218,7 @@ function renderDetailPanel() {
   for (const id of ["tm-na-what", "tm-na-status"]) {
     $("#" + id).onchange = naSave;
   }
+  $("#tm-na-waiting").onchange = () => toggleDelegated(t.id);
 
   // 繰り返し設定
   const repeatSave = () => {
@@ -2642,27 +2648,22 @@ function renderToday(body, actions) {
     appendTaskKids(listWrap, t, 0, { showProject: false, dnd: true }); // サブタスクもD&D可能なツリー表示
   }
 
-  // もうすぐ着手可能（ブロック中/待機中で今日やる理由のあるもの）を参考表示
-  const soon = activeTasks().filter(t => !canStart(t) && hasTodayReason(t));
-  if (soon.length) {
-    body.insertAdjacentHTML("beforeend", `<div class="today-head">🔒 待機中（着手不可のため一覧外）</div>`);
-    for (const t of soon) body.appendChild(taskRowEl(t, { showProject: true }));
-  }
-
-  // 人に任せた（返信待ち）タスクの一時置き場: ボールを相手に渡している間は着手中の一覧から外して、ここにまとめておく
-  const delegated = activeTasks().filter(t => t.waitingOnOther);
-  if (delegated.length) {
-    body.insertAdjacentHTML("beforeend", `<div class="today-head" data-testid="delegated-head">🤝 人に任せた（返信待ち・${delegated.length}件）</div>`);
-    for (const t of delegated) {
+  // 待機中（ブロック中/開始可能日前で今日やる理由のあるもの・人に任せて返信待ちのもの）をまとめて参考表示
+  const waitingTasks = activeTasks().filter(t => t.waitingOnOther || (!canStart(t) && hasTodayReason(t)));
+  if (waitingTasks.length) {
+    body.insertAdjacentHTML("beforeend", `<div class="today-head" data-testid="waiting-head">🔒 待機中（着手不可・返信待ちのため一覧外）</div>`);
+    for (const t of waitingTasks) {
       const row = taskRowEl(t, { showProject: true });
-      row.setAttribute("data-testid", "delegated-row");
-      const backBtn = document.createElement("button");
-      backBtn.className = "btn small";
-      backBtn.setAttribute("data-testid", "delegate-release-btn");
-      backBtn.textContent = "🔓 解除";
-      backBtn.style.cssText = "margin-top:1px;flex:none";
-      backBtn.onclick = e => { e.stopPropagation(); toggleDelegated(t.id); };
-      row.appendChild(backBtn);
+      if (t.waitingOnOther) {
+        row.setAttribute("data-testid", "delegated-row");
+        const backBtn = document.createElement("button");
+        backBtn.className = "btn small";
+        backBtn.setAttribute("data-testid", "delegate-release-btn");
+        backBtn.textContent = "🔓 解除";
+        backBtn.style.cssText = "margin-top:1px;flex:none";
+        backBtn.onclick = e => { e.stopPropagation(); toggleDelegated(t.id); };
+        row.appendChild(backBtn);
+      }
       body.appendChild(row);
     }
   }
