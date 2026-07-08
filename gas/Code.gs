@@ -43,9 +43,9 @@ function doPost(e) {
   }
 
   // Googleカレンダー連携: タスクの終了日時刻(endDate+endTime)を、その時刻から1時間の予定として
-  // 自分のデフォルトカレンダーに作成/更新する。既存のeventIdがあれば更新、なければ新規作成。
+  // 専用の「GanTODO」カレンダー（無ければ自動作成）に作成/更新する。既存のeventIdがあれば更新、なければ新規作成。
   if (req.action === "gcalUpsert") {
-    const cal = CalendarApp.getDefaultCalendar();
+    const cal = getGanTodoCalendar_();
     const start = new Date(req.startISO);
     const end = new Date(start.getTime() + (req.durationMinutes || 60) * 60000);
     let event = null;
@@ -64,7 +64,7 @@ function doPost(e) {
   // カレンダー連携の解除（終了日時刻が消えた・タスクが削除された場合に呼ぶ）
   if (req.action === "gcalDelete") {
     try {
-      const cal = CalendarApp.getDefaultCalendar();
+      const cal = getGanTodoCalendar_();
       const event = cal.getEventById(req.eventId);
       if (event) event.deleteEvent();
     } catch (err) {
@@ -74,6 +74,20 @@ function doPost(e) {
   }
 
   return json_({ error: "不明なaction: " + req.action });
+}
+
+// GanTODO専用のカレンダーを取得（無ければ作成）。マイカレンダーに「GanTODO」という名前で表示される。
+function getGanTodoCalendar_() {
+  const NAME = "GanTODO";
+  const cals = CalendarApp.getCalendarsByName(NAME);
+  return cals.length ? cals[0] : CalendarApp.createCalendar(NAME);
+}
+
+// カレンダー権限を許可するための手動実行用関数。
+// エディタ上部の関数選択で「authorizeCalendarAccess」を選んで▷実行を押すと、
+// 初回だけカレンダーへのアクセス許可を求める画面が出るので許可する（実行後は削除してOK）。
+function authorizeCalendarAccess() {
+  getGanTodoCalendar_();
 }
 
 function json_(obj) {
