@@ -1052,14 +1052,19 @@ function touch(t) {
   t.updatedAt = nowISO();
   maybeQueueCalendarSync(t);
 }
-// 終了日時刻(endDate+endTime)があるタスク、またはカレンダーに連携済みのタスクだけ同期対象にする
+// カレンダー連携の対象: 終了日時刻(endDate+endTime)がある（時間指定の予定）、
+// または開始日・終了日だけがある(endTime無し。終日の予定)、またはカレンダーに連携済みのタスク。
 // （無関係な編集のたびに毎回GASへ問い合わせるのを避けるための絞り込み）。
 // newTask()・TickTickインポートなどtouch()を経由しない新規作成パスからも呼ぶ。
+function isCalendarEligible(t) {
+  return !t.deletedAt && !!t.endDate && (!!t.endTime || !!t.startDate);
+}
 function maybeQueueCalendarSync(t) {
-  if ((t.endDate && t.endTime) || t.gcalEventId) queueCalendarSync(t.id);
+  if (isCalendarEligible(t) || t.gcalEventId) queueCalendarSync(t.id);
 }
 
-/* ---- Googleカレンダー連携: 終了日時刻(endDate+endTime)をその時刻から1時間の予定として自動反映 ----
+/* ---- Googleカレンダー連携: 終了日時刻(endDate+endTime)があればその時刻から1時間の予定、
+   時刻指定が無く開始日・終了日だけあれば開始日〜終了日の終日の予定として自動反映 ----
    GAS側(gas/Code.gs)のgcalUpsert/gcalDeleteアクションを使う。既存の同期用エンドポイントを流用するため
    別途OAuth設定は不要（GASが「自分として実行」する権限でカレンダーを操作する） */
 let calendarSyncTimer = null;
@@ -1082,8 +1087,8 @@ async function syncTaskToCalendar(t) {
   const { gasUrl, gasKey } = state.settings;
   if (!gasUrl) return;
   try {
-    if (t.deletedAt || !t.endDate || !t.endTime) {
-      // 予定が不要になった（削除された・終了日時刻がなくなった）→ 既存の連携があれば解除
+    if (!isCalendarEligible(t)) {
+      // 予定が不要になった（削除された・終了日時刻/終了日がなくなった）→ 既存の連携があれば解除
       if (t.gcalEventId) {
         const eventId = t.gcalEventId;
         t.gcalEventId = null;
@@ -1096,10 +1101,14 @@ async function syncTaskToCalendar(t) {
       }
       return;
     }
-    const startISO = `${t.endDate}T${t.endTime}:00+09:00`; // GAS実行環境のタイムゾーンに依存しないよう明示的にJSTを指定
+    const body = t.endTime
+      ? { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
+          startISO: `${t.endDate}T${t.endTime}:00+09:00`, durationMinutes: 60 } // GAS実行環境のタイムゾーンに依存しないよう明示的にJSTを指定
+      : { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
+          allDay: true, startDate: t.startDate, endDate: t.endDate };
     const res = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title, startISO, durationMinutes: 60 }),
+      body: JSON.stringify(body),
     });
     const json = await res.json();
     if (json.eventId && json.eventId !== t.gcalEventId) {
@@ -3388,6 +3397,14 @@ function renderSettings(body) {
         <span id="sync-status" style="font-size:12px;color:var(--text-dim);margin-left:8px"></span>
       </div>
       <div class="dash-card">
+        <h3>📆 Googleカレンダー連携</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
+          終了日に時刻が指定されたタスクは、その時刻から1時間の予定として自動でGoogleカレンダー（GanTODOカレンダー）に反映されます。<br>
+          時刻指定が無く開始日・終了日だけのタスクは、その期間の終日の予定として反映されます。<br>
+          いずれも編集するたびに自動反映されます。過去に作成済みで一度も編集していないタスクは自動反映の対象外のため、下のボタンでまとめて反映できます。</p>
+        <button class="btn" data-testid="gcal-backfill-btn">📆 既存タスクをGoogleカレンダーに反映</button>
+      </div>
+      <div class="dash-card">
         <h3>ℹ️ このアプリについて</h3>
         <p style="font-size:12px;color:var(--text-dim);line-height:1.8">
           GanTODO — ガントチャート付きTODOアプリ（単一HTMLファイル）<br>
@@ -3434,6 +3451,15 @@ function renderSettings(body) {
   body.querySelector("#gas-url").onchange = e => { state.settings.gasUrl = e.target.value.trim(); save(); };
   body.querySelector("#gas-key").onchange = e => { state.settings.gasKey = e.target.value.trim(); save(); };
   body.querySelector("[data-testid=sync-btn]").onclick = () => syncNow(null);
+  body.querySelector("[data-testid=gcal-backfill-btn]").onclick = async () => {
+    if (!state.settings.gasUrl) { toast("先にGAS WebアプリURLを設定してください", "warn"); return; }
+    const targets = liveTasks().filter(isCalendarEligible);
+    if (!targets.length) { toast("カレンダー連携対象のタスクがありません"); return; }
+    if (!confirm(`${targets.length}件のタスクをGoogleカレンダーに反映します。よろしいですか？`)) return;
+    toast(`${targets.length}件を反映中...`);
+    for (const t of targets) await syncTaskToCalendar(t);
+    toast(`✅ ${targets.length}件をGoogleカレンダーに反映しました`);
+  };
 
   body.querySelector("[data-testid=reset-btn]").onclick = async () => {
     const n = liveTasks().length;
