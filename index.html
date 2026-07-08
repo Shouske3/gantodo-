@@ -1096,7 +1096,7 @@ async function syncTaskToCalendar(t) {
       }
       return;
     }
-    const startISO = `${t.endDate}T${t.endTime}:00`;
+    const startISO = `${t.endDate}T${t.endTime}:00+09:00`; // GAS実行環境のタイムゾーンに依存しないよう明示的にJSTを指定
     const res = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title, startISO, durationMinutes: 60 }),
