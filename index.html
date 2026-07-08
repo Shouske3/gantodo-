@@ -505,7 +505,7 @@ svg text { user-select: none; }
         <div class="qa-row"><label>追加先</label><select id="qa-project" data-testid="qa-project"></select></div>
         <div class="qa-row"><label>納期</label><input type="date" id="qa-due" data-testid="qa-due"></div>
         <div class="qa-row"><label>開始日</label><input type="date" id="qa-start" data-testid="qa-start"></div>
-        <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"><input type="time" id="qa-end-time" data-testid="qa-end-time" title="時刻（任意）" style="flex:0.8"></div>
+        <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"><input type="time" id="qa-end-time" data-testid="qa-end-time" step="600" title="時刻（任意・10分単位）" style="flex:0.8"></div>
         <div class="qa-row"><label>タグ</label><input id="qa-tags" data-testid="qa-tags" placeholder="カンマ区切り"></div>
       </div>
     </div>
@@ -1848,7 +1848,7 @@ function renderDetailPanel() {
       <div class="f-col"><label>終了日・時刻</label>
         <div style="display:flex;gap:6px">
           ${dateWidget("end", "tm-end", t.endDate, "flex:1.5;min-width:0")}
-          <input type="time" id="tm-end-time" data-testid="tm-end-time" value="${t.endTime || ""}" style="flex:1;min-width:0" title="時刻（任意）">
+          <input type="time" id="tm-end-time" data-testid="tm-end-time" value="${t.endTime || ""}" step="600" style="flex:1;min-width:0" title="時刻（任意・10分単位）">
           <button type="button" class="date-clear-btn" data-testid="tm-end-clear" title="クリア">✕</button>
         </div>
       </div>
@@ -2354,7 +2354,7 @@ function openBulkEditModal() {
       <label><input type="checkbox" data-testid="bulk-end-on"> 終了日・時刻</label>
       <div class="bulk-inputs">
         <input type="date" data-testid="bulk-end" style="flex:1.4">
-        <input type="time" data-testid="bulk-end-time" style="flex:1">
+        <input type="time" data-testid="bulk-end-time" step="600" style="flex:1">
       </div>
     </div>
     <div class="bulk-field" data-field="esd">
