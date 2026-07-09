@@ -3313,8 +3313,7 @@ function renderMemos(body, actions) {
   } else {
     const projOpts = `<option value="">プロジェクト紐付けなし</option>` + visibleProjects().map(p =>
       `<option value="${p.id}" ${memo.projectId === p.id ? "selected" : ""}>📁 ${esc(p.name)}</option>`).join("");
-    const taskOpts = `<option value="">タスク紐付けなし</option>` + activeTasks().map(t =>
-      `<option value="${t.id}" ${memo.taskId === t.id ? "selected" : ""}>☑ ${esc(t.title)}</option>`).join("");
+    const linkedTask = memo.taskId ? liveTasks().find(t => t.id === memo.taskId) : null;
     editor.innerHTML = `
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input id="memo-title" data-testid="memo-title" value="${esc(memo.title)}" style="flex:1;min-width:150px;font-weight:700">
@@ -3322,9 +3321,16 @@ function renderMemos(body, actions) {
         <button class="btn small ${memoPreview ? "primary" : ""}" data-testid="memo-preview-btn">プレビュー</button>
         <button class="btn small danger" data-testid="memo-delete-btn">削除</button>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
         <select id="memo-proj" data-testid="memo-proj" style="flex:1;min-width:140px">${projOpts}</select>
-        <select id="memo-task" data-testid="memo-task" style="flex:1;min-width:140px">${taskOpts}</select>
+        <div style="flex:1;min-width:140px">
+          ${linkedTask
+            ? `<span class="dep-chip">☑ ${esc(linkedTask.title)} <span class="task-id-badge">#${shortId(linkedTask.id)}</span> <button data-testid="memo-task-clear">✕</button></span>`
+            : `<div class="dep-search">
+                <input id="memo-task-search" data-testid="memo-task-search" placeholder="＋タスクを名前かIDで検索して紐付け..." autocomplete="off">
+                <div id="memo-task-search-list" class="dep-search-list" data-testid="memo-task-search-list"></div>
+              </div>`}
+        </div>
       </div>
       ${memoPreview
         ? `<div id="memo-preview" data-testid="memo-preview">${renderMarkdown(memo.body)}</div>`
@@ -3333,7 +3339,27 @@ function renderMemos(body, actions) {
     const titleEl = editor.querySelector("#memo-title");
     titleEl.onchange = () => { memo.title = titleEl.value.trim() || "無題のメモ"; memo.updatedAt = nowISO(); save(); renderSidebar(); };
     editor.querySelector("#memo-proj").onchange = e => { memo.projectId = e.target.value || null; memo.updatedAt = nowISO(); save(); };
-    editor.querySelector("#memo-task").onchange = e => { memo.taskId = e.target.value || null; memo.updatedAt = nowISO(); save(); };
+    if (linkedTask) {
+      editor.querySelector("[data-testid=memo-task-clear]").onclick = () => { memo.taskId = null; memo.updatedAt = nowISO(); save(); render(); };
+    } else {
+      const taskCandidates = liveTasks();
+      const searchEl = editor.querySelector("#memo-task-search");
+      const listEl = editor.querySelector("#memo-task-search-list");
+      const renderTaskOptions = () => {
+        const q = searchEl.value.trim().toLowerCase();
+        const matches = (q ? taskCandidates.filter(x => x.title.toLowerCase().includes(q) || shortId(x.id).includes(q)) : taskCandidates).slice(0, 30);
+        listEl.innerHTML = matches.length
+          ? matches.map(x => `<div class="dep-search-item" data-id="${x.id}"><span>${esc(x.title)}${x.projectId ? `<span class="dep-search-proj"> ・ ${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</span><span class="task-id-badge">#${shortId(x.id)}</span></div>`).join("")
+          : `<div class="dep-search-empty">該当するタスクがありません</div>`;
+        listEl.querySelectorAll("[data-id]").forEach(el => {
+          el.onclick = () => { memo.taskId = el.dataset.id; memo.updatedAt = nowISO(); save(); render(); };
+        });
+        listEl.style.display = "block";
+      };
+      searchEl.addEventListener("focus", renderTaskOptions);
+      searchEl.addEventListener("input", renderTaskOptions);
+      searchEl.addEventListener("blur", () => setTimeout(() => { listEl.style.display = "none"; }, 150));
+    }
     editor.querySelector("[data-testid=memo-edit-btn]").onclick = () => { memoPreview = false; render(); };
     editor.querySelector("[data-testid=memo-preview-btn]").onclick = () => {
       const ta = editor.querySelector("#memo-body");
