@@ -659,6 +659,8 @@ function getProject(id) { return state.projects.find(p => p.id === id); }
 function getSection(id) { return state.sections.find(s => s.id === id); }
 function liveTasks() { return state.tasks.filter(t => !t.deletedAt); }
 function activeTasks() { return liveTasks().filter(t => t.status === "active"); }
+// 削除済み(status:"deleted")・アーカイブ済みを除いた、表示対象のプロジェクト一覧
+function visibleProjects() { return state.projects.filter(p => p.status !== "archived" && p.status !== "deleted"); }
 
 /* ---- HTMLエスケープ ---- */
 function esc(s) {
@@ -1384,7 +1386,7 @@ function renderSidebar() {
 
   // プロジェクト一覧（sortOrder順・ドラッグで並び替え可能）
   const projNav = document.getElementById("nav-projects");
-  const projs = state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  const projs = visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
   projNav.innerHTML = projs.map(p => {
     const act = activeTasks().filter(t => t.projectId === p.id);
     const od = act.filter(t => t.dueDate && t.dueDate < todayStr()).length;
@@ -1773,7 +1775,7 @@ function renderSearch(body) {
     t.title.toLowerCase().includes(q) || (t.note || "").toLowerCase().includes(q) ||
     (t.tags || []).some(tag => tag.toLowerCase().includes(q)));
   const memos = state.memos.filter(m => !m.deletedAt && (m.title.toLowerCase().includes(q) || (m.body || "").toLowerCase().includes(q)));
-  const projs = state.projects.filter(p => p.name.toLowerCase().includes(q));
+  const projs = visibleProjects().filter(p => p.name.toLowerCase().includes(q));
 
   if (projs.length) {
     body.insertAdjacentHTML("beforeend", `<div class="sec-head">プロジェクト</div>`);
@@ -1859,7 +1861,7 @@ function renderDetailPanel() {
   const dateWidget = (key, testid, value, style = "") => value && editingDateField !== key
     ? `<button type="button" class="date-compact-btn" data-testid="${testid}-compact" data-date-key="${key}" style="${style}">${fmtDisp(value)}</button>`
     : `<input type="date" id="${testid}" data-testid="${testid}" value="${value || ""}" style="${style}">`;
-  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+  const projOpts = `<option value="">（Inbox）</option>` + visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
     .map(p => `<option value="${p.id}" ${t.projectId === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("");
   const secOpts = `<option value="">（なし）</option>` + state.sections.filter(s => s.projectId === t.projectId)
     .map(s => `<option value="${s.id}" ${t.sectionId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
@@ -2382,7 +2384,12 @@ function openProjectModal(projId) {
     if (!confirm(`プロジェクト「${p.name}」を削除しますか？（中のタスクはゴミ箱へ）`)) return;
     for (const t of state.tasks.filter(t => t.projectId === p.id && !t.deletedAt)) { t.deletedAt = nowISO(); touch(t); }
     state.sections = state.sections.filter(s => s.projectId !== p.id);
-    state.projects = state.projects.filter(x => x.id !== p.id);
+    // 配列からハード削除すると、updatedAtのタイムスタンプが無いため同期のmergeByIdが
+    // 「削除」を検知できず、他端末や次回pull時に復活してしまう。他のエンティティ同様、
+    // status:"deleted"のタグ付け（ソフト削除）にしてupdatedAtを更新することで、
+    // 通常のmergeByIdの「新しい方が勝つ」ロジックがそのまま削除の伝播にも機能するようにする。
+    p.status = "deleted";
+    p.updatedAt = nowISO();
     closeModal();
     view = { type: "today" };
     commit();
@@ -2398,7 +2405,7 @@ function openBulkEditModal() {
   if (!tasks.length) return;
   // 詳細パネルが開いたままだとモーダルと重なって紛らわしい（フィールドが読みにくく操作できないように見える）ため、先に閉じる
   if (detailTaskId) { detailTaskId = null; renderDetailPanel(); }
-  const projOpts = `<option value="">（Inbox）</option>` + state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+  const projOpts = `<option value="">（Inbox）</option>` + visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
     .map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   // 依存タスクの候補: 選択中のタスク同士は対象外（自己参照・循環の温床になりやすいため）
   const depCandidates = liveTasks().filter(x => !ids.includes(x.id));
@@ -2812,7 +2819,7 @@ function renderDashboard(body) {
   psCard.className = "dash-card";
   psCard.setAttribute("data-testid", "dash-projects");
   psCard.innerHTML = `<h3>📁 プロジェクトサマリー</h3>`;
-  const projs = state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  const projs = visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
   if (!projs.length) psCard.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:12px">プロジェクトがありません</div>`);
   for (const p of projs) {
     const all = liveTasks().filter(t => t.projectId === p.id);
@@ -2880,7 +2887,7 @@ function renderGanttView(body, actions, title) {
   };
   if (isAll) {
     // プロジェクトごとにグループ化。プロジェクトなし（Inbox）は日付付きタスクのみ表示
-    for (const proj of state.projects.filter(x => x.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))) {
+    for (const proj of visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))) {
       const tasks = liveTasks().filter(t => t.projectId === proj.id && !t.parentTaskId).sort(bySort);
       if (!tasks.length) continue;
       rows.push({ kind: "proj", proj });
@@ -3304,7 +3311,7 @@ function renderMemos(body, actions) {
   if (!memo) {
     editor.innerHTML = `<div class="empty-msg">メモを選択するか、＋新規メモで作成してください</div>`;
   } else {
-    const projOpts = `<option value="">プロジェクト紐付けなし</option>` + state.projects.map(p =>
+    const projOpts = `<option value="">プロジェクト紐付けなし</option>` + visibleProjects().map(p =>
       `<option value="${p.id}" ${memo.projectId === p.id ? "selected" : ""}>📁 ${esc(p.name)}</option>`).join("");
     const taskOpts = `<option value="">タスク紐付けなし</option>` + activeTasks().map(t =>
       `<option value="${t.id}" ${memo.taskId === t.id ? "selected" : ""}>☑ ${esc(t.title)}</option>`).join("");
@@ -3467,7 +3474,7 @@ function renderSettings(body) {
     const warn = syncing
       ? "\n※同期先（スプレッドシート）のデータも一緒に消去します。他の端末は次回の同期時に空になります。"
       : "";
-    if (!confirm(`全データをリセットしますか？\nタスク${n}件・プロジェクト${state.projects.length}件・メモ・添付ファイルがすべて削除されます。\nこの操作は取り消せません（必要なら先にエクスポートしてください）。${warn}`)) return;
+    if (!confirm(`全データをリセットしますか？\nタスク${n}件・プロジェクト${visibleProjects().length}件・メモ・添付ファイルがすべて削除されます。\nこの操作は取り消せません（必要なら先にエクスポートしてください）。${warn}`)) return;
     // 添付の実体（IndexedDB）も削除
     try { indexedDB.deleteDatabase("gantodo_files"); idbHandle = null; } catch { /* 失敗しても続行 */ }
     const keep = { gasUrl: state.settings.gasUrl, gasKey: state.settings.gasKey, sidebarHidden: state.settings.sidebarHidden };
@@ -3642,7 +3649,7 @@ function importTickTickRows(rows, opts) {
   const existingBySource = new Map();
   for (const t of state.tasks) if (t.source === "ticktick" && t.sourceId) existingBySource.set(t.sourceId, t);
 
-  const projByName = new Map(state.projects.map(p => [p.name, p]));
+  const projByName = new Map(visibleProjects().map(p => [p.name, p]));
   const getOrMakeProject = name => {
     const key = name || "TickTickインポート";
     if (projByName.has(key)) return projByName.get(key);
@@ -3933,7 +3940,7 @@ function updateQuickAddBar() {
   const sel = document.getElementById("qa-project");
   const cur = qa.project;
   sel.innerHTML = `<option value="__ctx">（今の画面: ${esc(ctx.name)}）</option><option value="">受信トレイ</option>` +
-    state.projects.filter(p => p.status !== "archived").sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+    visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   sel.value = cur;
   if (sel.value !== cur) { qa.project = "__ctx"; sel.value = "__ctx"; }
   // 優先度フラグの選択表示
