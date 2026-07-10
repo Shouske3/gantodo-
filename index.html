@@ -1059,8 +1059,13 @@ function touch(t) {
 // または開始日・終了日だけがある(endTime無し。終日の予定)、またはカレンダーに連携済みのタスク。
 // （無関係な編集のたびに毎回GASへ問い合わせるのを避けるための絞り込み）。
 // newTask()・TickTickインポートなどtouch()を経由しない新規作成パスからも呼ぶ。
+// 終了日が未来のタスクを完了にした場合は対象外（＝カレンダー予定も削除）にする：
+// 「不要になったタスクを削除せず完了にしてしまう」運用のため、まだ来ていない予定は
+// 実施されない予定として扱う。終了日が今日以前の完了（予定通り実施した記録）は残す。
 function isCalendarEligible(t) {
-  return !t.deletedAt && !!t.endDate && (!!t.endTime || !!t.startDate);
+  if (t.deletedAt || !t.endDate) return false;
+  if (t.status === "completed" && t.endDate > todayStr()) return false;
+  return !!t.endTime || !!t.startDate;
 }
 function maybeQueueCalendarSync(t) {
   if (isCalendarEligible(t) || t.gcalEventId) queueCalendarSync(t.id);
