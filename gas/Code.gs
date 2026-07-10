@@ -42,9 +42,10 @@ function doPost(e) {
     return json_({ ok: true, savedAt: new Date().toISOString() });
   }
 
-  // Googleカレンダー連携: タスクの終了日時刻(endDate+endTime)があれば、その時刻から1時間の予定を、
-  // 時刻指定が無く開始日・終了日だけあれば開始日〜終了日の終日の予定を、
-  // 専用の「GanTODO」カレンダー（無ければ自動作成）に作成/更新する。既存のeventIdがあれば更新、なければ新規作成。
+  // Googleカレンダー連携: 開始日時刻・終了日時刻の両方があればその区間そのままの予定を、
+  // 終了日時刻だけあればその時刻から1時間の予定を、時刻指定が無く開始日・終了日だけあれば
+  // 開始日〜終了日の終日の予定を、専用の「GanTODO」カレンダー（無ければ自動作成）に作成/更新する。
+  // 既存のeventIdがあれば更新、なければ新規作成。
   if (req.action === "gcalUpsert") {
     const cal = getGanTodoCalendar_();
     let event = null;
@@ -63,7 +64,7 @@ function doPost(e) {
       }
     } else {
       const start = new Date(req.startISO);
-      const end = new Date(start.getTime() + (req.durationMinutes || 60) * 60000);
+      const end = req.endISO ? new Date(req.endISO) : new Date(start.getTime() + (req.durationMinutes || 60) * 60000);
       if (event) {
         event.setTime(start, end);
         event.setTitle(req.title || "(無題)");
