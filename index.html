@@ -504,7 +504,7 @@ svg text { user-select: none; }
         </div>
         <div class="qa-row"><label>追加先</label><select id="qa-project" data-testid="qa-project"></select></div>
         <div class="qa-row"><label>納期</label><input type="date" id="qa-due" data-testid="qa-due"></div>
-        <div class="qa-row"><label>開始日</label><input type="date" id="qa-start" data-testid="qa-start"></div>
+        <div class="qa-row"><label>開始日</label><input type="date" id="qa-start" data-testid="qa-start"><input type="time" id="qa-start-time" data-testid="qa-start-time" step="600" title="時刻（任意・10分単位）" style="flex:0.8"></div>
         <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"><input type="time" id="qa-end-time" data-testid="qa-end-time" step="600" title="時刻（任意・10分単位）" style="flex:0.8"></div>
         <div class="qa-row"><label>タグ</label><input id="qa-tags" data-testid="qa-tags" placeholder="カンマ区切り"></div>
       </div>
@@ -1040,7 +1040,7 @@ function newTask(fields) {
     id: uid(), title: "", note: "", status: "active", progress: 0,
     projectId: null, sectionId: null, parentTaskId: null,
     priority: "none", tags: [], assignee: "", category: "",
-    startDate: null, endDate: null, endTime: null, dueDate: null, earliestStartDate: null,
+    startDate: null, startTime: null, endDate: null, endTime: null, dueDate: null, earliestStartDate: null,
     blockedBy: [], isMilestone: false, waitingOnOther: false, nextAction: null, repeat: null,
     attachments: [], collapsed: false, gcalEventId: null,
     sortOrder: nextTopSortOrder(),
@@ -1071,8 +1071,9 @@ function maybeQueueCalendarSync(t) {
   if (isCalendarEligible(t) || t.gcalEventId) queueCalendarSync(t.id);
 }
 
-/* ---- Googleカレンダー連携: 終了日時刻(endDate+endTime)があればその時刻から1時間の予定、
-   時刻指定が無く開始日・終了日だけあれば開始日〜終了日の終日の予定として自動反映 ----
+/* ---- Googleカレンダー連携: 開始日時刻と終了日時刻の両方があればその区間そのままの予定、
+   終了日時刻だけあればその時刻から1時間の予定、時刻指定が無く開始日・終了日だけあれば
+   開始日〜終了日の終日の予定として自動反映 ----
    GAS側(gas/Code.gs)のgcalUpsert/gcalDeleteアクションを使う。既存の同期用エンドポイントを流用するため
    別途OAuth設定は不要（GASが「自分として実行」する権限でカレンダーを操作する） */
 let calendarSyncTimer = null;
@@ -1109,11 +1110,15 @@ async function syncTaskToCalendar(t) {
       }
       return;
     }
-    const body = t.endTime
+    // GAS実行環境のタイムゾーンに依存しないよう明示的に+09:00(JST)を付与する
+    const body = (t.startDate && t.startTime && t.endTime)
       ? { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
-          startISO: `${t.endDate}T${t.endTime}:00+09:00`, durationMinutes: 60 } // GAS実行環境のタイムゾーンに依存しないよう明示的にJSTを指定
-      : { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
-          allDay: true, startDate: t.startDate, endDate: t.endDate };
+          startISO: `${t.startDate}T${t.startTime}:00+09:00`, endISO: `${t.endDate}T${t.endTime}:00+09:00` }
+      : t.endTime
+        ? { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
+            startISO: `${t.endDate}T${t.endTime}:00+09:00`, durationMinutes: 60 }
+        : { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
+            allDay: true, startDate: t.startDate, endDate: t.endDate };
     const res = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
       body: JSON.stringify(body),
@@ -1554,7 +1559,7 @@ function taskRowEl(t, opts = {}) {
     const od = t.status === "active" && t.dueDate < today;
     badges.push(`<span class="badge ${od ? "overdue" : "due"}">${t.isMilestone ? "◆" : "納期"} ${fmtDispW(t.dueDate)}${od ? " 超過" + diffDays(today, t.dueDate) + "日" : ""}</span>`);
   }
-  if (t.startDate || t.endDate) badges.push(`<span class="badge">期間 ${fmtDisp(t.startDate)}〜${fmtDisp(t.endDate)}${t.endTime ? " " + t.endTime : ""}</span>`);
+  if (t.startDate || t.endDate) badges.push(`<span class="badge">期間 ${fmtDisp(t.startDate)}${t.startTime ? " " + t.startTime : ""}〜${fmtDisp(t.endDate)}${t.endTime ? " " + t.endTime : ""}</span>`);
   if (t.waitingOnOther) badges.push(`<span class="badge waiting">🤝 人に任せ中</span>`);
   if (blocked) {
     const names = (t.blockedBy || []).map(id => getTask(id)).filter(p => p && !p.deletedAt && p.status !== "completed").map(p => p.title);
@@ -1913,7 +1918,7 @@ function renderDetailPanel() {
   // 詳細設定を折りたたみ中は、設定済み項目をチップで要約表示
   const liveDeps = (t.blockedBy || []).filter(id => { const p = getTask(id); return p && !p.deletedAt; }).length;
   const chips = [];
-  if (t.startDate || t.endDate) chips.push("期間 " + fmtDisp(t.startDate) + "〜" + fmtDisp(t.endDate) + (t.endTime ? " " + t.endTime : ""));
+  if (t.startDate || t.endDate) chips.push("期間 " + fmtDisp(t.startDate) + (t.startTime ? " " + t.startTime : "") + "〜" + fmtDisp(t.endDate) + (t.endTime ? " " + t.endTime : ""));
   if (t.dueDate) chips.push((t.isMilestone ? "◆ " : "納期 ") + fmtDispW(t.dueDate));
   if (t.earliestStartDate) chips.push("⏳ " + fmtDisp(t.earliestStartDate) + "から");
   if (t.progress > 0) chips.push("進捗 " + t.progress + "%");
@@ -1967,9 +1972,10 @@ function renderDetailPanel() {
       <div class="f-col"><label>セクション</label><select id="tm-section" data-testid="tm-section">${secOpts}</select></div>
     </div>
     <div class="f-row">
-      <div class="f-col"><label>開始日</label>
-        <div class="date-field">
-          ${dateWidget("start", "tm-start", t.startDate)}
+      <div class="f-col"><label>開始日・時刻</label>
+        <div style="display:flex;gap:6px">
+          ${dateWidget("start", "tm-start", t.startDate, "flex:1.5;min-width:0")}
+          <input type="time" id="tm-start-time" data-testid="tm-start-time" value="${t.startTime || ""}" step="600" style="flex:1;min-width:0" title="時刻（任意・10分単位）">
           <button type="button" class="date-clear-btn" data-testid="tm-start-clear" title="クリア">✕</button>
         </div>
       </div>
@@ -2294,12 +2300,13 @@ function renderDetailPanel() {
       else if (v && t.startDate && v < t.startDate) t.startDate = v;
     });
   };
+  $("#tm-start-time").onchange = e => liteApply(() => { t.startTime = e.target.value || null; }); // 時刻欄は常にinput
   $("#tm-end-time").onchange = e => liteApply(() => { t.endTime = e.target.value || null; }); // 時刻欄は常にinput
   const tmDue = $("#tm-due");
   if (tmDue) tmDue.onchange = e => liteApply(() => { t.dueDate = e.target.value || null; });
   const tmEsd = $("#tm-esd");
   if (tmEsd) tmEsd.onchange = e => liteApply(() => { t.earliestStartDate = e.target.value || null; });
-  for (const id of ["tm-start", "tm-end", "tm-end-time", "tm-due", "tm-esd"]) {
+  for (const id of ["tm-start", "tm-start-time", "tm-end", "tm-end-time", "tm-due", "tm-esd"]) {
     const el = $("#" + id);
     if (el) refreshOnBlur(el); // コンパクト表示中（<input>が存在しない）はスキップ
   }
@@ -2317,7 +2324,7 @@ function renderDetailPanel() {
   });
   // 日付クリアボタン: iOSのネイティブ日付ピッカーには一度設定した値を空に戻す手段がないため、
   // 明示的なクリアボタンで対応する（ボタン操作なのでフルre-renderのapplyで即時反映してよい）
-  $("[data-testid=tm-start-clear]").onclick = () => apply(() => { t.startDate = null; });
+  $("[data-testid=tm-start-clear]").onclick = () => apply(() => { t.startDate = null; t.startTime = null; });
   $("[data-testid=tm-end-clear]").onclick = () => apply(() => { t.endDate = null; t.endTime = null; });
   $("[data-testid=tm-esd-clear]").onclick = () => apply(() => { t.earliestStartDate = null; });
   $("[data-testid=tm-due-clear]").onclick = () => apply(() => { t.dueDate = null; });
@@ -2505,8 +2512,11 @@ function openBulkEditModal() {
       </div>
     </div>
     <div class="bulk-field" data-field="start">
-      <label><input type="checkbox" data-testid="bulk-start-on"> 開始日</label>
-      <div class="bulk-inputs"><input type="date" data-testid="bulk-start"></div>
+      <label><input type="checkbox" data-testid="bulk-start-on"> 開始日・時刻</label>
+      <div class="bulk-inputs">
+        <input type="date" data-testid="bulk-start" style="flex:1.4">
+        <input type="time" data-testid="bulk-start-time" step="600" style="flex:1">
+      </div>
     </div>
     <div class="bulk-field" data-field="end">
       <label><input type="checkbox" data-testid="bulk-end-on"> 終了日・時刻</label>
@@ -2635,7 +2645,11 @@ function openBulkEditModal() {
         t.sectionId = $("[data-testid=bulk-section]").value || null;
         changed = true;
       }
-      if (on("start")) { t.startDate = $("[data-testid=bulk-start]").value || null; changed = true; }
+      if (on("start")) {
+        t.startDate = $("[data-testid=bulk-start]").value || null;
+        t.startTime = t.startDate ? ($("[data-testid=bulk-start-time]").value || null) : null;
+        changed = true;
+      }
       if (on("end")) {
         t.endDate = $("[data-testid=bulk-end]").value || null;
         t.endTime = t.endDate ? ($("[data-testid=bulk-end-time]").value || null) : null;
@@ -3803,7 +3817,7 @@ function importTickTickRows(rows, opts) {
       priority: TT_PRIORITY[r.priority] || "none",
       tags: r.tags ? r.tags.split(",").map(s => s.trim()).filter(Boolean) : [],
       assignee: "", category: "",
-      startDate, endDate, endTime, dueDate, earliestStartDate: null,
+      startDate, startTime: null, endDate, endTime, dueDate, earliestStartDate: null,
       blockedBy: [], isMilestone: false, nextAction: null, gcalEventId: null,
       attachments: [], collapsed: false,
       repeat: parseRRuleToRepeat(r.repeat),
@@ -4068,9 +4082,10 @@ function qaCreate() {
   // 開始日が未入力なら終了日と同じ値を自動設定（詳細パネルの開始日/終了日の挙動と揃える）
   if (end && !start) start = end;
   else if (start && end && end < start) end = start;
+  const startTime = document.getElementById("qa-start-time").value || null;
   const endTime = document.getElementById("qa-end-time").value || null;
   const tags = document.getElementById("qa-tags").value.split(",").map(s => s.trim()).filter(Boolean);
-  const t = newTask({ title, projectId: pid, priority: qa.priority, dueDate: due, startDate: start, endDate: end, endTime: end ? endTime : null, tags });
+  const t = newTask({ title, projectId: pid, priority: qa.priority, dueDate: due, startDate: start, startTime: start ? startTime : null, endDate: end, endTime: end ? endTime : null, tags });
   // 「今日すること」はスコア順の独自並びのため、新規タスクを一番上に固定するには
   // 手動並び順（manualOrder）の先頭に差し込む（他は今までの並びを維持）
   if (view.type === "today") {
@@ -4081,7 +4096,7 @@ function qaCreate() {
   // 入力と単発オプションをリセット（追加先の選択は維持）
   input.value = "";
   qa.priority = "none";
-  for (const id of ["qa-due", "qa-start", "qa-end", "qa-end-time", "qa-tags"]) document.getElementById(id).value = "";
+  for (const id of ["qa-due", "qa-start", "qa-start-time", "qa-end", "qa-end-time", "qa-tags"]) document.getElementById(id).value = "";
   document.getElementById("qa-popover").classList.remove("open");
   commit();
   toast(`「${t.title}」を追加しました`);
