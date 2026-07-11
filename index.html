@@ -1382,6 +1382,28 @@ function postponeTask(id, n) {
   commit();
   toast(n === 1 ? "明日へ先送りしました" : n + "日先へ送りました");
 }
+// タスクの日付を「今日」に寄せる（期限超過タスク用）。納期は今日に、実施期間はまるごと今日始まりに
+// （長さは保つ）。「明日へ」だと翌日以降になり今日すること一覧から外れてしまうケースへの対処。
+function bringTaskToToday(id) {
+  const t = getTask(id);
+  if (!t) return;
+  const today = todayStr();
+  if (t.dueDate) t.dueDate = today;
+  if (t.startDate && t.endDate) {
+    const len = Math.max(0, diffDays(t.endDate, t.startDate));
+    t.startDate = today;
+    t.endDate = addDays(today, len);
+  } else if (t.startDate) {
+    t.startDate = today;
+  } else if (t.endDate) {
+    t.endDate = today;
+  }
+  state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
+  state.today.updatedAt = nowISO();
+  touch(t);
+  commit();
+  toast("今日へ移動しました");
+}
 /*========================================================
   SIDEBAR & ROUTER
 ========================================================*/
@@ -2758,13 +2780,15 @@ function renderToday(body, actions) {
     sc.setAttribute("data-testid", "today-score");
     sc.textContent = Math.round(autoPriorityScore(t));
     row.insertBefore(sc, row.querySelector(".t-main"));
-    // 先送りボタン
+    // 先送り／今日へボタン。期限超過（納期が過去）のタスクは「明日へ」だと翌日になって
+    // 今日すること一覧から外れてしまうため、「今日へ」（今日に寄せる）ボタンにする。
+    const isOverdue = t.dueDate && t.dueDate < todayStr();
     const pp = document.createElement("button");
     pp.className = "btn small";
     pp.setAttribute("data-testid", "postpone-btn");
-    pp.textContent = "明日へ";
+    pp.textContent = isOverdue ? "今日へ" : "明日へ";
     pp.style.cssText = "margin-top:1px;flex:none";
-    pp.onclick = e => { e.stopPropagation(); postponeTask(t.id, 1); };
+    pp.onclick = e => { e.stopPropagation(); if (isOverdue) bringTaskToToday(t.id); else postponeTask(t.id, 1); };
     row.appendChild(pp);
     // D&D: 上下端=実行順の並び替え / 中央=サブタスク化 / サブタスクを上下端に落とすと引き出し
     row.addEventListener("dragstart", e => {
