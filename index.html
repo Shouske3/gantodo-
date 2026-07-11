@@ -4073,15 +4073,18 @@ function qaCreate() {
   const ctx = qaContext();
   const pid = qa.project === "__ctx" ? ctx.pid : (qa.project || null);
   let due = document.getElementById("qa-due").value || null;
-  // 「今日すること」画面からの追加は、納期未指定なら今日を既定にする。
-  // state.today.manualAddedは端末ローカルの一覧で同期対象外のため、日付なしのままだと
-  // 他端末では「今日やる理由」が無く表示されない（納期はタスク本体の同期対象フィールド）。
-  if (!due && view.type === "today") due = todayStr();
   let start = document.getElementById("qa-start").value || null;
   let end = document.getElementById("qa-end").value || null;
   // 開始日が未入力なら終了日と同じ値を自動設定（詳細パネルの開始日/終了日の挙動と揃える）
   if (end && !start) start = end;
   else if (start && end && end < start) end = start;
+  // 「今日すること」画面からの追加で日付が何も指定されていない場合は、開始日・終了日を今日にする
+  // （納期には入れない）。startDate/endDateは同期対象なので他端末でも「今日やる理由」を持てる
+  // （state.today.manualAddedは端末ローカルで同期対象外のため、日付を実データに持たせる必要がある）。
+  if (view.type === "today" && !due && !start && !end) {
+    start = todayStr();
+    end = todayStr();
+  }
   const startTime = document.getElementById("qa-start-time").value || null;
   const endTime = document.getElementById("qa-end-time").value || null;
   const tags = document.getElementById("qa-tags").value.split(",").map(s => s.trim()).filter(Boolean);
