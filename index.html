@@ -3352,11 +3352,27 @@ function attachGanttDrag(svg, dw, rangeStart) {
 function renderMarkdown(src, opts = {}) {
   const lines = String(src || "").split("\n");
   let html = "", inList = false;
-  const inline = s => esc(s)
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") // 旧: インライン太字（後方互換）
-    .replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>") // 新: 太字
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, `<a href="$2" target="_blank" rel="noopener">$1</a>`);
+  const inline = s => {
+    // まず明示的なMarkdownリンク [text](url) を <a> に変換し、その後に「裸のURL」を自動リンク化する。
+    // esc()を最初に通しているので、ユーザーが書いた " < > は実体参照に変換済み＝残った生の " > は
+    // 自分が生成した<a>タグ由来だけ。そこで直前が生の " や > の場合だけ除外する否定後読みを使えば、
+    // 日本語のように空白なしでURLが続く場合（例:「サイトはhttps://...」）も拾いつつ、生成済み<a>の
+    // href属性値や表示テキストを二重にリンク化する事故を防げる。
+    let t = esc(s)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") // 旧: インライン太字（後方互換）
+      .replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>") // 新: 太字
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, `<a href="$2" target="_blank" rel="noopener">$1</a>`);
+    // 裸のURL（http(s)://... または www....）を自動リンク化。直前が生の " > = / のときは除外。
+    t = t.replace(/(?<!["'>=\/])((?:https?:\/\/|www\.)[^\s<]+)/g, (m, url) => {
+      let trail = "";
+      const mt = url.match(/[)\].,!?、。）」』]+$/); // 末尾に付いた句読点や閉じ括弧はリンクから外す
+      if (mt) { trail = mt[0]; url = url.slice(0, -trail.length); }
+      const href = url.startsWith("www.") ? "https://" + url : url;
+      return `<a href="${href}" target="_blank" rel="noopener">${url}</a>` + trail;
+    });
+    return t;
+  };
   const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
