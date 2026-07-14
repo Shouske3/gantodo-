@@ -128,6 +128,14 @@ function upsertCalendarEvent_(req) {
     } else {
       event = cal.createEvent(req.title || "(無題)", start, end);
     }
+    // 時刻ありの予定は、開始時刻ちょうどにポップアップ通知（iPhoneのGoogleカレンダーアプリで
+    // 通知を有効にしていれば、開始時刻にリマインドが表示される）。更新時の重複を避けるため一旦全消し。
+    try {
+      event.removeAllReminders();
+      event.addPopupReminder(0);
+    } catch (err) {
+      // リマインダー設定に非対応の環境などは無視（予定自体の作成は成功させる）
+    }
   }
   return event.getId();
 }
