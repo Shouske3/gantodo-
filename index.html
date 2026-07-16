@@ -95,6 +95,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   cursor: pointer; font-size: 15px; line-height: 1;
 }
 .side-sec button:hover { color: var(--accent); }
+.side-sec.side-sec-toggle { cursor: pointer; }
+.side-sec.side-sec-toggle:hover { color: var(--text-dim); }
+.side-sec .tri { display: inline-block; font-size: 9px; margin-right: 3px; transition: transform .15s; }
+.side-sec.collapsed .tri { transform: rotate(-90deg); }
 .proj-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 
 /* ===== Header buttons ===== */
@@ -473,8 +477,9 @@ svg text { user-select: none; }
     <div class="side-search">
       <input id="search-input" data-testid="search-input" type="search" placeholder="検索（/）">
     </div>
+    <div class="side-sec side-sec-toggle" id="smart-sec" data-testid="smart-sec"><span class="tri">▼</span> メニュー</div>
     <div id="nav-smart"></div>
-    <div class="side-sec">プロジェクト <button id="add-project-btn" data-testid="add-project-btn" title="プロジェクト追加">＋</button></div>
+    <div class="side-sec side-sec-toggle" id="projects-sec" data-testid="projects-sec"><span class="tri">▼</span> プロジェクト <button id="add-project-btn" data-testid="add-project-btn" title="プロジェクト追加">＋</button></div>
     <div id="nav-projects"></div>
     <div class="side-sec">その他</div>
     <div id="nav-misc"></div>
@@ -558,7 +563,7 @@ function defaultState() {
     memos: [],
     resetAt: null, // 全データリセットの実施時刻（同期時に「自分より新しいリセットが他端末で起きたか」の判定に使う）
     today: { date: todayStr(), manualOrder: null, manualAdded: [], updatedAt: nowISO() },
-    settings: { gasUrl: "", gasKey: "", weekStart: 1, sidebarHidden: false, ganttHideDone: false },
+    settings: { gasUrl: "", gasKey: "", weekStart: 1, sidebarHidden: false, ganttHideDone: false, sidebarCollapsed: { smart: false, projects: false } },
   };
 }
 
@@ -1422,6 +1427,7 @@ function smartCounts() {
     today: todayTasks().length,
     inbox: act.filter(t => !t.projectId && !t.parentTaskId).length,
     overdue: act.filter(t => t.dueDate && t.dueDate < today).length,
+    newlyadded: act.filter(t => (t.createdAt || "").slice(0, 10) === today).length,
     trash: state.tasks.filter(t => t.deletedAt).length,
   };
 }
@@ -1436,6 +1442,7 @@ function renderSidebar() {
     { key: "smart-week", icon: "🗓", label: "今週", cnt: null, v: { type: "smart", smart: "week" } },
     { key: "inbox", icon: "📥", label: "Inbox", cnt: c.inbox, v: { type: "smart", smart: "inbox" } },
     { key: "overdue", icon: "⚠️", label: "期限超過", cnt: c.overdue, alert: c.overdue > 0, v: { type: "smart", smart: "overdue" } },
+    { key: "newlyadded", icon: "🆕", label: "新規追加", cnt: c.newlyadded, v: { type: "smart", smart: "newlyadded" } },
     { key: "all", icon: "📋", label: "すべて", cnt: null, v: { type: "smart", smart: "all" } },
   ];
   const nav = document.getElementById("nav-smart");
@@ -1516,6 +1523,25 @@ function renderSidebar() {
   misc.querySelectorAll(".nav-item").forEach((el, i) => {
     el.onclick = () => setView(miscItems[i].v);
   });
+
+  // 「メニュー」「プロジェクト」見出しをアコーディオンとして開閉できるようにする（状態はsettingsに保存）
+  const col = state.settings.sidebarCollapsed || (state.settings.sidebarCollapsed = {});
+  const applyAccordion = (secId, listId, key) => {
+    const sec = document.getElementById(secId);
+    const list = document.getElementById(listId);
+    if (!sec || !list) return;
+    const collapsed = !!col[key];
+    sec.classList.toggle("collapsed", collapsed);
+    list.style.display = collapsed ? "none" : "";
+    sec.onclick = e => {
+      if (e.target.closest("button")) return; // 見出し内のボタン（＋など）は開閉に反応させない
+      col[key] = !col[key];
+      save();
+      renderSidebar();
+    };
+  };
+  applyAccordion("smart-sec", "nav-smart", "smart");
+  applyAccordion("projects-sec", "nav-projects", "projects");
 }
 
 /* ---- メイン描画（ルーター） ---- */
@@ -1786,6 +1812,7 @@ function renderSmart(body, actions, title) {
     } },
     inbox:   { label: "📥 Inbox", filter: t => !t.projectId && !t.parentTaskId },
     overdue: { label: "⚠️ 期限超過", filter: t => t.dueDate && t.dueDate < today },
+    newlyadded: { label: "🆕 新規追加タスク（今日）", filter: t => (t.createdAt || "").slice(0, 10) === today },
     all:     { label: "📋 すべてのタスク", filter: () => true },
   };
   const def = defs[view.smart] || defs.all;
