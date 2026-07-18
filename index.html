@@ -228,9 +228,18 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .proj-sum .meta { display: flex; font-size: 11px; color: var(--text-dim); margin-top: 2px; gap: 8px; }
 
 /* ===== Gantt ===== */
-#gantt-wrap { display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--bg2); }
-#gantt-names { min-width: 200px; max-width: 200px; border-right: 1px solid var(--border); overflow: hidden; }
-#gantt-scroll { flex: 1; overflow-x: auto; overflow-y: hidden; position: relative; }
+/* ガント: 1つのスクロールコンテナ内でヘッダ行（日付）を上端固定・タスク名列を左端固定にする
+   フリーズペイン方式。縦スクロールしても日付ヘッダが常に見えるようにする。 */
+#gantt-wrap { display: grid; border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: auto; background: var(--bg2); max-height: calc(100vh - 190px); min-height: 200px; }
+#gantt-corner { position: sticky; top: 0; left: 0; z-index: 4; background: var(--bg3);
+  display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--text-faint);
+  font-weight: 700; border-right: 1px solid var(--border); border-bottom: 1px solid var(--bg3); }
+#gantt-hdr-svg { position: sticky; top: 0; z-index: 3; background: var(--bg2); display: block; }
+#gantt-names { position: sticky; left: 0; z-index: 2; background: var(--bg2);
+  border-right: 1px solid var(--border); }
+#gantt-body-svg { display: block; }
+@media (max-width: 760px) { #gantt-wrap { max-height: calc(100vh - 210px); } }
 .g-name-row {
   height: 34px; display: flex; align-items: center; gap: 5px;
   padding: 0 8px; font-size: 12px; border-bottom: 1px solid var(--bg3);
@@ -368,6 +377,8 @@ svg text { user-select: none; }
 .dp-title:focus { border-bottom-color: var(--accent); }
 .dp-crumb { font-size: 12px; color: var(--text-dim); cursor: pointer; margin-bottom: 6px; }
 .dp-crumb:hover { color: var(--accent); }
+.linklike { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+.linklike:hover { color: var(--accent); }
 .dp-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; cursor: pointer; }
 .dp-chips:hover .badge { background: var(--bg-hover); }
 .dp-foot {
@@ -1961,6 +1972,7 @@ function renderDetailPanel() {
   const depCandidates = liveTasks().filter(x =>
     x.id !== t.id && !(t.blockedBy || []).includes(x.id) && !wouldCycle(t.id, x.id));
   const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort((a, b) => a.sortOrder - b.sortOrder);
+  const linkedMemos = state.memos.filter(m => !m.deletedAt && m.taskId === t.id);
   const na = t.nextAction || {};
   const statusLine = done ? "✅ 完了" : t.waitingOnOther ? "🤝 人に任せ中（返信待ち）" : isBlocked(t) ? "🔒 ブロック中" : isWaiting(t) ? `⏳ ${fmtDisp(t.earliestStartDate)}から着手可` : "▶ 着手可能";
 
@@ -2010,6 +2022,10 @@ function renderDetailPanel() {
     })()}
     <input id="tm-title" data-testid="tm-title" class="dp-title" value="${esc(t.title)}" placeholder="タイトル">
     <div class="task-id-badge" data-testid="tm-id" style="margin:2px 0 6px" title="同名タスクを区別するための内部ID">#${shortId(t.id)}</div>
+    ${linkedMemos.length ? `<div data-testid="tm-linked-memos" style="margin:2px 0 6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+      <span style="font-size:11px;color:var(--text-dim)">📝 関連メモ:</span>
+      ${linkedMemos.map(m => `<span class="badge linklike" data-testid="tm-memo-link" data-memo="${m.id}" title="このメモを開く">${esc(m.title)}</span>`).join("")}
+    </div>` : ""}
     ${(!noteEditing && (t.note || "").trim())
       ? `<div id="tm-note-view" data-testid="tm-note-view" style="margin:10px 0 2px" title="クリックで編集">${renderMarkdown(t.note, { interactive: true })}</div>`
       : `<textarea id="tm-note" data-testid="tm-note" placeholder="メモ（詳細）
@@ -2160,6 +2176,11 @@ function renderDetailPanel() {
   };
   panel.querySelectorAll(".dp-flags .flag-btn").forEach(b => {
     b.onclick = () => apply(() => { t.priority = b.dataset.p; });
+  });
+
+  // 関連メモへのリンク（クリックでメモ画面を開く）
+  panel.querySelectorAll("[data-testid=tm-memo-link]").forEach(el => {
+    el.onclick = () => { editingMemoId = el.dataset.memo; memoPreview = true; detailTaskId = null; setView({ type: "memos" }); };
   });
 
   // 親タスクへのパンくず・変更/解除・検索して設定
@@ -3134,11 +3155,15 @@ function drawGantt(body, rows) {
   const dx = d => diffDays(d, rangeStart) * dw;
 
   // ---- 左：タスク名列 ----
+  const NAMES_W = window.innerWidth <= 760 ? 120 : 200;
   const wrap = document.createElement("div");
   wrap.id = "gantt-wrap";
+  wrap.style.gridTemplateColumns = `${NAMES_W}px ${W}px`;
+  wrap.style.gridTemplateRows = `${G_HDR}px ${H}px`;
   const names = document.createElement("div");
   names.id = "gantt-names";
-  names.innerHTML = `<div class="g-hdr-row">タスク</div>` + rows.map(r => {
+  names.style.width = NAMES_W + "px";
+  names.innerHTML = rows.map(r => {
     if (r.kind === "proj") {
       const proj = r.proj;
       return `<div class="g-name-row head" data-proj-row="${proj ? proj.id : ""}" data-testid="gantt-proj-row">
@@ -3165,15 +3190,8 @@ function drawGantt(body, rows) {
     el.onclick = () => openTaskModal(el.dataset.task);
   });
 
-  // ---- 右：タイムラインSVG ----
-  const scroll = document.createElement("div");
-  scroll.id = "gantt-scroll";
+  // ---- 右：タイムラインSVG（日付ヘッダと本体を別SVGに分け、ヘッダを上端固定にする） ----
   const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("width", W);
-  svg.setAttribute("height", H + G_HDR);
-  svg.setAttribute("data-testid", "gantt-svg");
-  svg.style.display = "block";
 
   let defs = `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
     <path d="M0,0 L10,5 L0,10 z" fill="var(--text-dim)"/></marker></defs>`;
@@ -3211,10 +3229,10 @@ function drawGantt(body, rows) {
   rows.forEach((r, i) => {
     if (r.kind === "sec" || r.kind === "proj") gridHtml += `<rect x="0" y="${G_HDR + i * G_ROW}" width="${W}" height="${G_ROW}" fill="rgba(255,255,255,.04)"/>`;
   });
-  // 今日線
+  // 今日線（線は本体SVG、「今日」ラベルは固定ヘッダSVGへ）
   const tx = dx(today) + dw / 2;
-  gridHtml += `<line x1="${tx}" y1="${G_HDR - 6}" x2="${tx}" y2="${H + G_HDR}" stroke="var(--danger)" stroke-width="1.5" data-testid="today-line"/>
-    <text x="${tx}" y="${G_HDR - 24}" text-anchor="middle" font-size="9" fill="var(--danger)">今日</text>`;
+  gridHtml += `<line x1="${tx}" y1="${G_HDR - 6}" x2="${tx}" y2="${H + G_HDR}" stroke="var(--danger)" stroke-width="1.5" data-testid="today-line"/>`;
+  const todayLabelHtml = `<text x="${tx}" y="${G_HDR - 24}" text-anchor="middle" font-size="9" fill="var(--danger)">今日</text>`;
 
   // ---- バー ----
   const rowIndexByTask = new Map();
@@ -3279,18 +3297,40 @@ function drawGantt(body, rows) {
     }
   });
 
-  svg.innerHTML = defs + gridHtml + depHtml + barsHtml + hdrHtml;
-  scroll.appendChild(svg);
+  // 固定される日付ヘッダSVG（上端固定）と、本体SVG（グリッド・バー・依存線）を分ける。
+  // 本体はviewBoxで上部G_HDR分を切り取り、既存のy座標（G_HDRオフセット付き）をそのまま使う。
+  const hdrSvg = document.createElementNS(NS, "svg");
+  hdrSvg.id = "gantt-hdr-svg";
+  hdrSvg.setAttribute("width", W);
+  hdrSvg.setAttribute("height", G_HDR);
+  hdrSvg.setAttribute("viewBox", `0 0 ${W} ${G_HDR}`);
+  hdrSvg.innerHTML = hdrHtml + todayLabelHtml;
+
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  svg.setAttribute("viewBox", `0 ${G_HDR} ${W} ${H}`);
+  svg.setAttribute("data-testid", "gantt-svg");
+  svg.id = "gantt-body-svg";
+  svg.innerHTML = defs + gridHtml + depHtml + barsHtml;
+
+  const corner = document.createElement("div");
+  corner.id = "gantt-corner";
+  corner.textContent = "タスク";
+
+  // グリッド配置順: 左上コーナー→日付ヘッダ→タスク名列→本体
+  wrap.appendChild(corner);
+  wrap.appendChild(hdrSvg);
   wrap.appendChild(names);
-  wrap.appendChild(scroll);
+  wrap.appendChild(svg);
   body.appendChild(wrap);
   body.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:11px;margin-top:8px">
     バー: ドラッグで移動・端で伸縮 / ◆=納期 / 黄点線=開始可能日 / 🔒=依存タスク未完了 / 依存の設定はタスク編集画面から</div>`);
 
-  // スクロール位置: 記憶があれば復元、なければ今日を中央付近に（同期的に設定し、
+  // 横スクロール位置: 記憶があれば復元、なければ今日を中央付近に（同期的に設定し、
   // 描画後のズレでドラッグ座標が狂わないようにする）
-  scroll.scrollLeft = ganttScrollMemo !== null ? ganttScrollMemo : Math.max(0, dx(today) - scroll.clientWidth / 3);
-  scroll.addEventListener("scroll", () => { ganttScrollMemo = scroll.scrollLeft; });
+  wrap.scrollLeft = ganttScrollMemo !== null ? ganttScrollMemo : Math.max(0, dx(today) - wrap.clientWidth / 3);
+  wrap.addEventListener("scroll", () => { ganttScrollMemo = wrap.scrollLeft; });
 
   // ---- ドラッグ操作 ----
   attachGanttDrag(svg, dw, rangeStart);
@@ -3485,7 +3525,7 @@ function renderMemos(body, actions) {
         <select id="memo-proj" data-testid="memo-proj" style="flex:1;min-width:140px">${projOpts}</select>
         <div style="flex:1;min-width:140px">
           ${linkedTask
-            ? `<span class="dep-chip">☑ ${esc(linkedTask.title)} <span class="task-id-badge">#${shortId(linkedTask.id)}</span> <button data-testid="memo-task-clear">✕</button></span>`
+            ? `<span class="dep-chip"><span class="linklike" data-testid="memo-task-open" title="このタスクを開く">☑ ${esc(linkedTask.title)} <span class="task-id-badge">#${shortId(linkedTask.id)}</span></span> <button data-testid="memo-task-clear">✕</button></span>`
             : `<div class="dep-search">
                 <input id="memo-task-search" data-testid="memo-task-search" placeholder="＋タスクを名前かIDで検索して紐付け..." autocomplete="off">
                 <div id="memo-task-search-list" class="dep-search-list" data-testid="memo-task-search-list"></div>
@@ -3500,6 +3540,7 @@ function renderMemos(body, actions) {
     titleEl.onchange = () => { memo.title = titleEl.value.trim() || "無題のメモ"; memo.updatedAt = nowISO(); save(); renderSidebar(); };
     editor.querySelector("#memo-proj").onchange = e => { memo.projectId = e.target.value || null; memo.updatedAt = nowISO(); save(); };
     if (linkedTask) {
+      editor.querySelector("[data-testid=memo-task-open]").onclick = () => openTaskModal(linkedTask.id);
       editor.querySelector("[data-testid=memo-task-clear]").onclick = () => { memo.taskId = null; memo.updatedAt = nowISO(); save(); render(); };
     } else {
       const taskCandidates = liveTasks();
