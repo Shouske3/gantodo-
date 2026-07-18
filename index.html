@@ -876,8 +876,14 @@ function hasTodayReason(t) {
   const today = todayStr();
   if (t.dueDate && t.dueDate <= today) return true;
   if (t.startDate && t.startDate <= today && (!t.endDate || today <= t.endDate)) return true;
+  if (t.endDate && t.endDate < today) return true; // 終了日を過ぎた（やり残し）タスクも今日やることに出す
   if (state.today.manualAdded.includes(t.id)) return true;
   return false;
+}
+// 期限切れ（アクティブで、納期または終了日が今日より前）。バッジ表示・期限超過リスト・件数で共通利用。
+function isOverdue(t) {
+  const today = todayStr();
+  return t.status === "active" && ((t.dueDate && t.dueDate < today) || (t.endDate && t.endDate < today));
 }
 // 「今日すること」の表示対象（人に任せて返信待ちのタスクは一時的に外し、専用の置き場だけに表示する）
 function todayTasks() {
@@ -1437,7 +1443,7 @@ function smartCounts() {
   return {
     today: todayTasks().length,
     inbox: act.filter(t => !t.projectId && !t.parentTaskId).length,
-    overdue: act.filter(t => t.dueDate && t.dueDate < today).length,
+    overdue: act.filter(isOverdue).length,
     newlyadded: act.filter(t => (t.createdAt || "").slice(0, 10) === today).length,
     trash: state.tasks.filter(t => t.deletedAt).length,
   };
@@ -1473,7 +1479,7 @@ function renderSidebar() {
   const projs = visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
   projNav.innerHTML = projs.map(p => {
     const act = activeTasks().filter(t => t.projectId === p.id);
-    const od = act.filter(t => t.dueDate && t.dueDate < todayStr()).length;
+    const od = act.filter(isOverdue).length;
     const active = (view.type === "project" || view.type === "gantt") && view.id === p.id;
     return `<div class="nav-item ${active ? "active" : ""}" draggable="true" data-proj="${p.id}" data-testid="nav-proj-${esc(p.name)}">
       <span class="proj-dot" style="background:${p.color}"></span>
@@ -1618,7 +1624,10 @@ function taskRowEl(t, opts = {}) {
     const od = t.status === "active" && t.dueDate < today;
     badges.push(`<span class="badge ${od ? "overdue" : "due"}">${t.isMilestone ? "◆" : "納期"} ${fmtDispW(t.dueDate)}${od ? " 超過" + diffDays(today, t.dueDate) + "日" : ""}</span>`);
   }
-  if (t.startDate || t.endDate) badges.push(`<span class="badge">期間 ${fmtDisp(t.startDate)}${t.startTime ? " " + t.startTime : ""}〜${fmtDisp(t.endDate)}${t.endTime ? " " + t.endTime : ""}</span>`);
+  if (t.startDate || t.endDate) {
+    const endOd = t.status === "active" && t.endDate && t.endDate < today; // 終了日が過ぎたら期間バッジも期限切れ表示
+    badges.push(`<span class="badge ${endOd ? "overdue" : ""}">期間 ${fmtDisp(t.startDate)}${t.startTime ? " " + t.startTime : ""}〜${fmtDisp(t.endDate)}${t.endTime ? " " + t.endTime : ""}${endOd ? " 超過" + diffDays(today, t.endDate) + "日" : ""}</span>`);
+  }
   if (t.waitingOnOther) badges.push(`<span class="badge waiting">🤝 人に任せ中</span>`);
   if (blocked) {
     const names = (t.blockedBy || []).map(id => getTask(id)).filter(p => p && !p.deletedAt && p.status !== "completed").map(p => p.title);
@@ -1822,7 +1831,7 @@ function renderSmart(body, actions, title) {
       return (t.dueDate && t.dueDate <= wEnd) || (t.startDate && t.startDate <= wEnd && (!t.endDate || t.endDate >= today));
     } },
     inbox:   { label: "📥 Inbox", filter: t => !t.projectId && !t.parentTaskId },
-    overdue: { label: "⚠️ 期限超過", filter: t => t.dueDate && t.dueDate < today },
+    overdue: { label: "⚠️ 期限超過", filter: isOverdue },
     newlyadded: { label: "🆕 新規追加タスク（今日）", filter: t => (t.createdAt || "").slice(0, 10) === today },
     all:     { label: "📋 すべてのタスク", filter: () => true },
   };
@@ -2828,15 +2837,15 @@ function renderToday(body, actions) {
     sc.setAttribute("data-testid", "today-score");
     sc.textContent = Math.round(autoPriorityScore(t));
     row.insertBefore(sc, row.querySelector(".t-main"));
-    // 先送り／今日へボタン。期限超過（納期が過去）のタスクは「明日へ」だと翌日になって
+    // 先送り／今日へボタン。期限超過（納期または終了日が過去）のタスクは「明日へ」だと翌日になって
     // 今日すること一覧から外れてしまうため、「今日へ」（今日に寄せる）ボタンにする。
-    const isOverdue = t.dueDate && t.dueDate < todayStr();
+    const overdue = isOverdue(t);
     const pp = document.createElement("button");
     pp.className = "btn small";
     pp.setAttribute("data-testid", "postpone-btn");
-    pp.textContent = isOverdue ? "今日へ" : "明日へ";
+    pp.textContent = overdue ? "今日へ" : "明日へ";
     pp.style.cssText = "margin-top:1px;flex:none";
-    pp.onclick = e => { e.stopPropagation(); if (isOverdue) bringTaskToToday(t.id); else postponeTask(t.id, 1); };
+    pp.onclick = e => { e.stopPropagation(); if (overdue) bringTaskToToday(t.id); else postponeTask(t.id, 1); };
     row.appendChild(pp);
     // D&D: 上下端=実行順の並び替え / 中央=サブタスク化 / サブタスクを上下端に落とすと引き出し
     row.addEventListener("dragstart", e => {
@@ -2953,7 +2962,7 @@ function renderDashboard(body) {
     { title: "🔥 今日のアクション", tasks: act.filter(t => isOn(t, today)), testid: "dash-today" },
     { title: "🌅 明日のアクション", tasks: act.filter(t => isOn(t, tomorrow)), testid: "dash-tomorrow" },
     { title: "🗓 今週のアクション", tasks: act.filter(t => { for (let d = today; d <= weekEnd; d = addDays(d, 1)) if (isOn(t, d)) return true; return false; }), testid: "dash-week" },
-    { title: "⚠️ 期限超過", tasks: act.filter(t => t.dueDate && t.dueDate < today), alert: true, testid: "dash-overdue" },
+    { title: "⚠️ 期限超過", tasks: act.filter(isOverdue), alert: true, testid: "dash-overdue" },
     { title: "📌 本日期日", tasks: act.filter(t => t.dueDate === today), testid: "dash-duetoday" },
   ];
 
@@ -2989,7 +2998,7 @@ function renderDashboard(body) {
   for (const p of projs) {
     const all = liveTasks().filter(t => t.projectId === p.id);
     const done = all.filter(t => t.status === "completed").length;
-    const od = all.filter(t => t.status === "active" && t.dueDate && t.dueDate < today).length;
+    const od = all.filter(isOverdue).length;
     const pct = all.length ? Math.round(done / all.length * 100) : 0;
     const el = document.createElement("div");
     el.className = "proj-sum";
