@@ -316,6 +316,8 @@ svg text { user-select: none; }
 .dep-search-empty { padding: 8px 10px; font-size: 12px; color: var(--text-faint); }
 .date-field { display: flex; gap: 4px; align-items: center; }
 .date-field input[type="date"] { flex: 1; min-width: 0; }
+.time-pick { flex: 1; min-width: 0; }
+.time-pick .time-sel { flex: 1; min-width: 0; width: 100%; }
 .date-clear-btn {
   flex: none; width: 28px; height: 28px; padding: 0; font-size: 12px; line-height: 1;
   border: 1px solid var(--border); border-radius: 6px; background: var(--bg3); color: var(--text-dim); cursor: pointer;
@@ -520,8 +522,8 @@ svg text { user-select: none; }
         </div>
         <div class="qa-row"><label>追加先</label><select id="qa-project" data-testid="qa-project"></select></div>
         <div class="qa-row"><label>納期</label><input type="date" id="qa-due" data-testid="qa-due"></div>
-        <div class="qa-row"><label>開始日</label><input type="date" id="qa-start" data-testid="qa-start"><input type="time" id="qa-start-time" data-testid="qa-start-time" step="600" title="時刻（任意・10分単位）" style="flex:0.8"></div>
-        <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"><input type="time" id="qa-end-time" data-testid="qa-end-time" step="600" title="時刻（任意・10分単位）" style="flex:0.8"></div>
+        <div class="qa-row"><label>開始日</label><input type="date" id="qa-start" data-testid="qa-start"><span id="qa-start-time-slot" style="flex:0.8"></span></div>
+        <div class="qa-row"><label>終了日</label><input type="date" id="qa-end" data-testid="qa-end"><span id="qa-end-time-slot" style="flex:0.8"></span></div>
         <div class="qa-row"><label>タグ</label><input id="qa-tags" data-testid="qa-tags" placeholder="カンマ区切り"></div>
       </div>
     </div>
@@ -574,7 +576,7 @@ function defaultState() {
     memos: [],
     resetAt: null, // 全データリセットの実施時刻（同期時に「自分より新しいリセットが他端末で起きたか」の判定に使う）
     today: { date: todayStr(), manualOrder: null, manualAdded: [], updatedAt: nowISO() },
-    settings: { gasUrl: "", gasKey: "", weekStart: 1, sidebarHidden: false, ganttHideDone: false, sidebarCollapsed: { smart: false, projects: false } },
+    settings: { gasUrl: "", gasKey: "", weekStart: 1, sidebarHidden: false, ganttHideDone: false, todayHideDone: false, sidebarCollapsed: { smart: false, projects: false } },
   };
 }
 
@@ -668,6 +670,40 @@ function fmtDispW(s) {
   if (!s) return "";
   const d = parseDate(s);
   return (d.getMonth() + 1) + "/" + d.getDate() + "(" + WEEKDAYS[d.getDay()] + ")";
+}
+
+/* ---- 時刻ピッカー（時＋10分刻みの分の2プルダウン。ネイティブ<input type=time>のドロップダウンが
+   stepを無視して1分刻みで出るのを避け、確実に10分単位で選べるようにする） ---- */
+const TIME_MINUTES = ["00", "10", "20", "30", "40", "50"];
+function timePickerHTML(idBase, value, style = "") {
+  const hh = value ? value.slice(0, 2) : "";
+  let mm = value ? value.slice(3, 5) : "";
+  if (mm && !TIME_MINUTES.includes(mm)) mm = String(Math.round(parseInt(mm, 10) / 10) * 10 % 60).padStart(2, "0"); // 10分刻みでない旧データは最寄りに丸める
+  const hOpts = `<option value="">--</option>` + Array.from({ length: 24 }, (_, h) => {
+    const v = String(h).padStart(2, "0"); return `<option value="${v}"${v === hh ? " selected" : ""}>${h}時</option>`;
+  }).join("");
+  const mOpts = `<option value="">--</option>` + TIME_MINUTES.map(v => `<option value="${v}"${v === mm ? " selected" : ""}>${v}分</option>`).join("");
+  return `<span class="time-pick" style="display:inline-flex;gap:2px;${style}">
+    <select id="${idBase}-h" data-testid="${idBase}-h" class="time-sel" title="時（任意）">${hOpts}</select>
+    <select id="${idBase}-m" data-testid="${idBase}-m" class="time-sel" title="分（10分単位・任意）">${mOpts}</select>
+  </span>`;
+}
+function readTimePicker(idBase) {
+  const he = document.getElementById(idBase + "-h"), me = document.getElementById(idBase + "-m");
+  const h = he ? he.value : "", m = me ? me.value : "";
+  if (!h && !m) return null;
+  return `${h || "00"}:${m || "00"}`;
+}
+function onTimePickerChange(idBase, cb) {
+  const he = document.getElementById(idBase + "-h"), me = document.getElementById(idBase + "-m");
+  const handler = () => cb(readTimePicker(idBase));
+  if (he) he.onchange = handler;
+  if (me) me.onchange = handler;
+}
+function clearTimePicker(idBase) {
+  const he = document.getElementById(idBase + "-h"), me = document.getElementById(idBase + "-m");
+  if (he) he.value = "";
+  if (me) me.value = "";
 }
 
 /* ---- エンティティ取得 ---- */
@@ -1099,19 +1135,34 @@ function maybeQueueCalendarSync(t) {
    GAS側(gas/Code.gs)のgcalUpsert/gcalDeleteアクションを使う。既存の同期用エンドポイントを流用するため
    別途OAuth設定は不要（GASが「自分として実行」する権限でカレンダーを操作する） */
 let calendarSyncTimer = null;
+let calendarSyncDelay = 3000; // 数秒だけデバウンス（メインの15秒同期より短く「リアルタイム」寄りに）。テストからは大きくして自動発火を止められる
 const pendingCalendarSyncIds = new Set();
 function queueCalendarSync(taskId) {
   if (!state.settings.gasUrl) return;
   pendingCalendarSyncIds.add(taskId);
   clearTimeout(calendarSyncTimer);
-  calendarSyncTimer = setTimeout(flushCalendarSync, 3000); // 数秒だけデバウンス（メインの15秒同期より短く「リアルタイム」寄りに）
+  calendarSyncTimer = setTimeout(flushCalendarSync, calendarSyncDelay);
 }
+// テスト用フック: デバウンス秒数の変更と、保留中キューのクリア（自動タイマーの誤発火を止めて決定的にする）
+function setCalendarSyncDelay(ms) { calendarSyncDelay = ms; }
+function resetCalendarQueue() { pendingCalendarSyncIds.clear(); clearTimeout(calendarSyncTimer); }
+let calendarFlushInFlight = false;
 async function flushCalendarSync() {
-  const ids = [...pendingCalendarSyncIds];
-  pendingCalendarSyncIds.clear();
-  for (const id of ids) {
-    const t = getTask(id);
-    if (t) await syncTaskToCalendar(t);
+  // 二重起動を防ぐ（デバウンスの自動タイマーと手動フラッシュが重なると、同じタスクの
+  // syncTaskToCalendarが並行実行され、両方がeventId未設定を見て予定を二重作成してしまうため）。
+  // 1回のフラッシュは今キューにあるぶんだけ処理する（whileで回すと、フラッシュ中に再キューされた
+  // 場合に無限ループになるため。取りこぼしは次回のフラッシュで処理される）。
+  if (calendarFlushInFlight) return;
+  calendarFlushInFlight = true;
+  try {
+    const ids = [...pendingCalendarSyncIds];
+    pendingCalendarSyncIds.clear();
+    for (const id of ids) {
+      const t = getTask(id);
+      if (t) await syncTaskToCalendar(t);
+    }
+  } finally {
+    calendarFlushInFlight = false;
   }
 }
 async function syncTaskToCalendar(t) {
@@ -1844,12 +1895,27 @@ function renderSmart(body, actions, title) {
     const all = excludeNested(liveTasks());
     tasks = all.filter(t => t.status !== "completed");
     doneTasks = all.filter(t => t.status === "completed");
+  } else if (view.smart === "today" && !state.settings.todayHideDone) {
+    // Todayページは完了タスクも消さず、末尾の「完了」セクションに表示する（「完了を隠す」がONなら隠す）。
+    // 対象＝今日やる理由があるタスク、または今日完了したタスク。
+    const todayAll = excludeNested(liveTasks().filter(t =>
+      def.filter(t) || (t.status === "completed" && (t.completedAt || "").slice(0, 10) === today)));
+    tasks = todayAll.filter(t => t.status !== "completed");
+    doneTasks = todayAll.filter(t => t.status === "completed");
   } else {
     tasks = excludeNested(tasks); // 親が同じ一覧にいる場合は親の下にツリー表示
   }
   // 新しく追加したタスクが一覧の先頭に来るよう、sortOrder昇順（新しいものほど小さい値）で並べる
   tasks.sort((a, b) => a.sortOrder - b.sortOrder);
-  const isG = ganttToggle(actions, "smart:" + (view.smart || "all"));
+  // Todayページ限定で「完了を隠す」トグルをリスト操作行に出す
+  const todayToggle = view.smart === "today"
+    ? `<button class="btn small ${state.settings.todayHideDone ? "on" : ""}" data-testid="today-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>`
+    : "";
+  const isG = ganttToggle(actions, "smart:" + (view.smart || "all"), todayToggle);
+  if (!isG) {
+    const thd = actions.querySelector("[data-testid=today-hide-done]");
+    if (thd) thd.onclick = () => { state.settings.todayHideDone = !state.settings.todayHideDone; save(); render(); };
+  }
   if (isG) {
     drawGantt(body, ganttRowsFor(tasks.concat(doneTasks)));
     return;
@@ -2049,14 +2115,14 @@ function renderDetailPanel() {
       <div class="f-col"><label>開始日・時刻</label>
         <div style="display:flex;gap:6px">
           ${dateWidget("start", "tm-start", t.startDate, "flex:1.5;min-width:0")}
-          <input type="time" id="tm-start-time" data-testid="tm-start-time" value="${t.startTime || ""}" step="600" style="flex:1;min-width:0" title="時刻（任意・10分単位）">
+          ${timePickerHTML("tm-start-time", t.startTime, "flex:1;min-width:0")}
           <button type="button" class="date-clear-btn" data-testid="tm-start-clear" title="クリア">✕</button>
         </div>
       </div>
       <div class="f-col"><label>終了日・時刻</label>
         <div style="display:flex;gap:6px">
           ${dateWidget("end", "tm-end", t.endDate, "flex:1.5;min-width:0")}
-          <input type="time" id="tm-end-time" data-testid="tm-end-time" value="${t.endTime || ""}" step="600" style="flex:1;min-width:0" title="時刻（任意・10分単位）">
+          ${timePickerHTML("tm-end-time", t.endTime, "flex:1;min-width:0")}
           <button type="button" class="date-clear-btn" data-testid="tm-end-clear" title="クリア">✕</button>
         </div>
       </div>
@@ -2363,7 +2429,8 @@ function renderDetailPanel() {
     const v = e.target.value || null;
     liteApply(() => {
       t.startDate = v;
-      if (v && t.endDate && t.endDate < v) t.endDate = v; // 期間の前後を自動補正
+      if (v && !t.endDate) t.endDate = v; // 終了日が未入力なら開始日と同じ値を自動設定
+      else if (v && t.endDate && t.endDate < v) t.endDate = v; // 期間の前後を自動補正
     });
     if (v) {
       const conflict = (t.blockedBy || []).map(getTask).filter(p => p && !p.deletedAt && p.status !== "completed" && p.endDate && p.endDate > v);
@@ -2379,13 +2446,13 @@ function renderDetailPanel() {
       else if (v && t.startDate && v < t.startDate) t.startDate = v;
     });
   };
-  $("#tm-start-time").onchange = e => liteApply(() => { t.startTime = e.target.value || null; }); // 時刻欄は常にinput
-  $("#tm-end-time").onchange = e => liteApply(() => { t.endTime = e.target.value || null; }); // 時刻欄は常にinput
+  onTimePickerChange("tm-start-time", v => liteApply(() => { t.startTime = v; })); // 時刻ピッカー（時＋10分刻みの分）
+  onTimePickerChange("tm-end-time", v => liteApply(() => { t.endTime = v; }));
   const tmDue = $("#tm-due");
   if (tmDue) tmDue.onchange = e => liteApply(() => { t.dueDate = e.target.value || null; });
   const tmEsd = $("#tm-esd");
   if (tmEsd) tmEsd.onchange = e => liteApply(() => { t.earliestStartDate = e.target.value || null; });
-  for (const id of ["tm-start", "tm-start-time", "tm-end", "tm-end-time", "tm-due", "tm-esd"]) {
+  for (const id of ["tm-start", "tm-start-time-h", "tm-start-time-m", "tm-end", "tm-end-time-h", "tm-end-time-m", "tm-due", "tm-esd"]) {
     const el = $("#" + id);
     if (el) refreshOnBlur(el); // コンパクト表示中（<input>が存在しない）はスキップ
   }
@@ -2594,14 +2661,14 @@ function openBulkEditModal() {
       <label><input type="checkbox" data-testid="bulk-start-on"> 開始日・時刻</label>
       <div class="bulk-inputs">
         <input type="date" data-testid="bulk-start" style="flex:1.4">
-        <input type="time" data-testid="bulk-start-time" step="600" style="flex:1">
+        ${timePickerHTML("bulk-start-time", "", "flex:1")}
       </div>
     </div>
     <div class="bulk-field" data-field="end">
       <label><input type="checkbox" data-testid="bulk-end-on"> 終了日・時刻</label>
       <div class="bulk-inputs">
         <input type="date" data-testid="bulk-end" style="flex:1.4">
-        <input type="time" data-testid="bulk-end-time" step="600" style="flex:1">
+        ${timePickerHTML("bulk-end-time", "", "flex:1")}
       </div>
     </div>
     <div class="bulk-field" data-field="esd">
@@ -2726,12 +2793,12 @@ function openBulkEditModal() {
       }
       if (on("start")) {
         t.startDate = $("[data-testid=bulk-start]").value || null;
-        t.startTime = t.startDate ? ($("[data-testid=bulk-start-time]").value || null) : null;
+        t.startTime = t.startDate ? readTimePicker("bulk-start-time") : null;
         changed = true;
       }
       if (on("end")) {
         t.endDate = $("[data-testid=bulk-end]").value || null;
-        t.endTime = t.endDate ? ($("[data-testid=bulk-end-time]").value || null) : null;
+        t.endTime = t.endDate ? readTimePicker("bulk-end-time") : null;
         changed = true;
       }
       if (on("esd")) { t.earliestStartDate = $("[data-testid=bulk-esd]").value || null; changed = true; }
@@ -3093,8 +3160,10 @@ function ganttRowsFor(tasks) {
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
-    rows.push({ kind: "task", task: t, depth });
-    if (depth < 5) for (const k of state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort)) pushTree(k, depth + 1);
+    const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
+    rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 });
+    if (t.ganttCollapsed) return; // 親タスクで折りたたみ中は子（サブツリー）を出さない
+    if (depth < 5) for (const k of kids) pushTree(k, depth + 1);
   };
   const groups = new Map(); // projectId -> tasks（出現順）
   for (const t of tasks) {
@@ -3183,9 +3252,18 @@ function drawGantt(body, rows) {
     if (r.kind === "sec") return `<div class="g-name-row head" data-sec="${r.sec.id}"><span class="tri" style="font-size:9px">${r.sec.collapsed ? "▶" : "▼"}</span><span class="nm">${esc(r.sec.name)}</span></div>`;
     const t = r.task;
     const mark = t.status === "completed" ? "✓ " : isBlocked(t) ? "🔒" : isWaiting(t) ? "⏳" : "";
+    const tri = r.hasKids ? `<span class="tri" data-gtoggle="${t.id}" style="font-size:9px;cursor:pointer">${t.ganttCollapsed ? "▶" : "▼"}</span>` : "";
     return `<div class="g-name-row" data-task="${t.id}" data-testid="gantt-name" style="padding-left:${8 + r.depth * 14}px">
-      <span class="nm" style="${t.status === "completed" ? "text-decoration:line-through;color:var(--text-faint)" : ""}">${mark}${esc(t.title)}</span></div>`;
+      ${tri}<span class="nm" style="${t.status === "completed" ? "text-decoration:line-through;color:var(--text-faint)" : ""}">${mark}${esc(t.title)}</span></div>`;
   }).join("");
+  // 親タスクの折りたたみ三角（クリックでサブツリーを開閉。行のクリック＝タスクを開く とは分離）
+  names.querySelectorAll("[data-gtoggle]").forEach(el => {
+    el.onclick = e => {
+      e.stopPropagation();
+      const t = getTask(el.dataset.gtoggle);
+      if (t) { t.ganttCollapsed = !t.ganttCollapsed; commit(); }
+    };
+  });
   names.querySelectorAll("[data-sec]").forEach(el => {
     el.onclick = () => { const s = getSection(el.dataset.sec); s.collapsed = !s.collapsed; commit(); };
   });
@@ -4202,8 +4280,8 @@ function qaCreate() {
     start = todayStr();
     end = todayStr();
   }
-  const startTime = document.getElementById("qa-start-time").value || null;
-  const endTime = document.getElementById("qa-end-time").value || null;
+  const startTime = readTimePicker("qa-start-time");
+  const endTime = readTimePicker("qa-end-time");
   const tags = document.getElementById("qa-tags").value.split(",").map(s => s.trim()).filter(Boolean);
   const t = newTask({ title, projectId: pid, priority: qa.priority, dueDate: due, startDate: start, startTime: start ? startTime : null, endDate: end, endTime: end ? endTime : null, tags });
   // 「今日すること」はスコア順の独自並びのため、新規タスクを一番上に固定するには
@@ -4216,7 +4294,8 @@ function qaCreate() {
   // 入力と単発オプションをリセット（追加先の選択は維持）
   input.value = "";
   qa.priority = "none";
-  for (const id of ["qa-due", "qa-start", "qa-start-time", "qa-end", "qa-end-time", "qa-tags"]) document.getElementById(id).value = "";
+  for (const id of ["qa-due", "qa-start", "qa-end", "qa-tags"]) document.getElementById(id).value = "";
+  clearTimePicker("qa-start-time"); clearTimePicker("qa-end-time");
   document.getElementById("qa-popover").classList.remove("open");
   commit();
   toast(`「${t.title}」を追加しました`);
@@ -4225,6 +4304,9 @@ function qaCreate() {
 
 {
   const input = document.getElementById("qa-input");
+  // クイック追加の時刻ピッカー（時＋10分刻みの分）をスロットに描画（静的HTMLでは関数展開されないためJSで注入）
+  document.getElementById("qa-start-time-slot").innerHTML = timePickerHTML("qa-start-time", "", "flex:0.8");
+  document.getElementById("qa-end-time-slot").innerHTML = timePickerHTML("qa-end-time", "", "flex:0.8");
   input.addEventListener("keydown", e => { if (e.key === "Enter" && !isIMEEnter(e)) { e.preventDefault(); qaCreate(); } });
   document.getElementById("qa-add-btn").onclick = qaCreate;
   document.getElementById("qa-today").onclick = () => {
