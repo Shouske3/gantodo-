@@ -247,6 +247,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .g-name-row:hover { background: var(--bg-hover); }
 .g-name-row.head { font-weight: 700; color: var(--text-dim); background: var(--bg3); }
+.g-name-row.sel { background: var(--accent-dim); box-shadow: inset 3px 0 0 var(--accent); }
+rect.g-sel-row { fill: var(--accent); opacity: .14; pointer-events: none; }
 .g-name-row .nm { overflow: hidden; text-overflow: ellipsis; }
 .g-hdr-row { height: 34px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--text-faint); font-weight: 700; border-bottom: 1px solid var(--bg3); }
 svg text { user-select: none; }
@@ -555,6 +557,7 @@ let editingParent = false;             // 親タスクの検索欄を表示中�
 const selectedTaskIds = new Set();     // Ctrl/Cmd+クリックで複数選択中のタスクid（セッション内のみ・非永続）
 let ganttZoom = "day";                  // day | week | month
 let ganttScrollMemo = null;             // ガントの横スクロール位置（再描画で失わないよう記憶）
+let ganttSelectedTaskId = null;         // ガントで選択中のタスク（行をハイライト表示する）
 let editingMemoId = null;
 let memoPreview = false;
 
@@ -1099,7 +1102,7 @@ function newTask(fields) {
     projectId: null, sectionId: null, parentTaskId: null,
     priority: "none", tags: [], assignee: "", category: "",
     startDate: null, startTime: null, endDate: null, endTime: null, dueDate: null, earliestStartDate: null,
-    blockedBy: [], isMilestone: false, waitingOnOther: false, nextAction: null, repeat: null,
+    blockedBy: [], isMilestone: false, waitingOnOther: false, isHabit: false, nextAction: null, repeat: null,
     attachments: [], collapsed: false, gcalEventId: null,
     sortOrder: nextTopSortOrder(),
     createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null,
@@ -2018,7 +2021,9 @@ function openPrompt(label, defVal, cb) {
 function openTaskModal(taskId) { // 呼び出し箇所互換のため関数名は維持
   if (taskId !== detailTaskId) { noteEditing = false; editingDateField = null; editingParent = false; }
   detailTaskId = taskId;
+  ganttSelectedTaskId = taskId; // ガント表示中なら選択行をハイライト（他ビューでは無害）
   renderDetailPanel();
+  applyGanttSelection();
 }
 function closeDetail() {
   detailTaskId = null;
@@ -2076,6 +2081,7 @@ function renderDetailPanel() {
       </div>
       <span class="dp-status">${statusLine}</span>
       <button class="btn small ${t.waitingOnOther ? "primary" : ""}" data-testid="tm-delegate" title="人に任せた（返信待ち）に切り替え/解除">🤝</button>
+      <button class="btn small ${t.isHabit ? "primary" : ""}" data-testid="tm-habit" title="習慣（定期タスク）に設定/解除。習慣タスクはガントチャートに表示しません">習慣</button>
       <button class="btn small dp-close-btn" data-testid="tm-close" style="margin-left:auto" title="閉じる（Esc・下にスワイプでも閉じます）">✕</button>
     </div>
     ${(() => {
@@ -2242,6 +2248,7 @@ function renderDetailPanel() {
   }
   $("[data-testid=tm-check]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delegate]").onclick = () => toggleDelegated(t.id);
+  $("[data-testid=tm-habit]").onclick = () => apply(() => { t.isHabit = !t.isHabit; });
   $("[data-testid=tm-complete]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delete]").onclick = () => {
     if (!confirm(`「${t.title}」を削除しますか？（30日間はゴミ箱から復元可）`)) return;
@@ -3120,6 +3127,7 @@ function renderGanttView(body, actions, title) {
   const rows = []; // {kind:'proj'|'sec'|'task', proj?, sec?, task?, depth}
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
+    if (t.isHabit) return; // 習慣（定期タスク）はガントに表示しない（実施日を確認する必要がないため。サブツリーごと除外）
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     rows.push({ kind: "task", task: t, depth });
     for (const k of state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort)) {
@@ -3159,6 +3167,7 @@ function ganttRowsFor(tasks) {
   const rows = [];
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
+    if (t.isHabit) return; // 習慣（定期タスク）はガントに表示しない（サブツリーごと除外）
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
     rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 });
@@ -3241,7 +3250,7 @@ function drawGantt(body, rows) {
   const names = document.createElement("div");
   names.id = "gantt-names";
   names.style.width = NAMES_W + "px";
-  names.innerHTML = rows.map(r => {
+  names.innerHTML = rows.map((r, i) => {
     if (r.kind === "proj") {
       const proj = r.proj;
       return `<div class="g-name-row head" data-proj-row="${proj ? proj.id : ""}" data-testid="gantt-proj-row">
@@ -3253,7 +3262,7 @@ function drawGantt(body, rows) {
     const t = r.task;
     const mark = t.status === "completed" ? "✓ " : isBlocked(t) ? "🔒" : isWaiting(t) ? "⏳" : "";
     const tri = r.hasKids ? `<span class="tri" data-gtoggle="${t.id}" style="font-size:9px;cursor:pointer">${t.ganttCollapsed ? "▶" : "▼"}</span>` : "";
-    return `<div class="g-name-row" data-task="${t.id}" data-testid="gantt-name" style="padding-left:${8 + r.depth * 14}px">
+    return `<div class="g-name-row" data-task="${t.id}" data-row-index="${i}" data-testid="gantt-name" style="padding-left:${8 + r.depth * 14}px">
       ${tri}<span class="nm" style="${t.status === "completed" ? "text-decoration:line-through;color:var(--text-faint)" : ""}">${mark}${esc(t.title)}</span></div>`;
   }).join("");
   // 親タスクの折りたたみ三角（クリックでサブツリーを開閉。行のクリック＝タスクを開く とは分離）
@@ -3399,6 +3408,7 @@ function drawGantt(body, rows) {
   svg.setAttribute("viewBox", `0 ${G_HDR} ${W} ${H}`);
   svg.setAttribute("data-testid", "gantt-svg");
   svg.id = "gantt-body-svg";
+  svg.dataset.width = W; // 選択行ハイライトの幅計算に使う
   svg.innerHTML = defs + gridHtml + depHtml + barsHtml;
 
   const corner = document.createElement("div");
@@ -3425,6 +3435,33 @@ function drawGantt(body, rows) {
   svg.querySelectorAll("[data-testid=gantt-milestone], text[data-task]").forEach(el => {
     el.addEventListener("click", () => openTaskModal(el.dataset.task));
   });
+  applyGanttSelection(); // 再描画後も選択行のハイライトを復元
+}
+
+// ガントで選択中のタスクの行を、スプレッドシートのように行全体でハイライトする。
+// タスク名列（.g-name-row.sel）と、タイムライン側（本体SVGに敷く半透明の帯）を両方光らせる。
+// ガント表示中でなければ（要素が無ければ）何もしないので、リスト系ビューからの呼び出しでも安全。
+function applyGanttSelection() {
+  const names = document.getElementById("gantt-names");
+  const svg = document.getElementById("gantt-body-svg");
+  if (!names || !svg) return;
+  names.querySelectorAll(".g-name-row.sel").forEach(el => el.classList.remove("sel"));
+  const prevBand = svg.querySelector(".g-sel-row");
+  if (prevBand) prevBand.remove();
+  if (!ganttSelectedTaskId) return;
+  const row = names.querySelector(`.g-name-row[data-task="${ganttSelectedTaskId}"]`);
+  if (!row) return; // 選択タスクが折りたたみ/習慣/完了非表示などで行に出ていない
+  row.classList.add("sel");
+  const idx = parseInt(row.dataset.rowIndex, 10);
+  const W = parseFloat(svg.dataset.width);
+  if (isNaN(idx) || isNaN(W)) return;
+  const band = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  band.setAttribute("class", "g-sel-row");
+  band.setAttribute("x", "0");
+  band.setAttribute("y", G_HDR + idx * G_ROW);
+  band.setAttribute("width", W);
+  band.setAttribute("height", G_ROW);
+  svg.insertBefore(band, svg.firstChild); // グリッド線・バーより下に敷く
 }
 
 function attachGanttDrag(svg, dw, rangeStart) {
