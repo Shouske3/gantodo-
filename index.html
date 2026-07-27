@@ -648,6 +648,14 @@ function todayStr() {
   const d = new Date();
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
+// ISOタイムスタンプ（nowISO()＝UTC保存）を「端末ローカルの日付(YYYY-MM-DD)」に変換する。
+// createdAt/completedAtはUTCで保存されるので、todayStr()（ローカル日付）と「今日か？」を比較する時は必ずこれを通す。
+// JSTの00:00〜09:00はUTCだと前日になり、朝作成/完了したタスクの「今日作成/完了」判定がズレる（＝新規追加や完了に出ない）のを防ぐ。
+function localDateOf(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
 function parseDate(s) {
   const [y, m, d] = s.split("-").map(Number);
   return new Date(y, m - 1, d);
@@ -1137,6 +1145,7 @@ function touch(t) {
 // 実施されない予定として扱う。終了日が今日以前の完了（予定通り実施した記録）は残す。
 function isCalendarEligible(t) {
   if (t.deletedAt || !t.endDate) return false;
+  if (t.isHabit) return false; // 習慣（定期）タスクはカレンダー連携しない（既に連携済みなら後続のsyncで予定を削除）
   if (t.status === "completed" && t.endDate > todayStr()) return false;
   return !!t.endTime || !!t.startDate;
 }
@@ -1510,7 +1519,7 @@ function smartCounts() {
     today: todayTasks().length,
     inbox: act.filter(t => !t.projectId && !t.parentTaskId).length,
     overdue: act.filter(isOverdue).length,
-    newlyadded: act.filter(t => (t.createdAt || "").slice(0, 10) === today).length,
+    newlyadded: act.filter(t => localDateOf(t.createdAt) === today).length,
     trash: state.tasks.filter(t => t.deletedAt).length,
   };
 }
@@ -1898,7 +1907,7 @@ function renderSmart(body, actions, title) {
     } },
     inbox:   { label: "📥 Inbox", filter: t => !t.projectId && !t.parentTaskId },
     overdue: { label: "⚠️ 期限超過", filter: isOverdue },
-    newlyadded: { label: "🆕 新規追加タスク（今日）", filter: t => (t.createdAt || "").slice(0, 10) === today },
+    newlyadded: { label: "🆕 新規追加タスク（今日）", filter: t => localDateOf(t.createdAt) === today },
     all:     { label: "📋 すべてのタスク", filter: () => true },
   };
   const def = defs[view.smart] || defs.all;
@@ -1914,7 +1923,7 @@ function renderSmart(body, actions, title) {
     // Todayページは完了タスクも消さず、末尾の「完了」セクションに表示する（「完了を隠す」がONなら隠す）。
     // 対象＝今日やる理由があるタスク、または今日完了したタスク。
     const todayAll = excludeNested(liveTasks().filter(t =>
-      def.filter(t) || (t.status === "completed" && (t.completedAt || "").slice(0, 10) === today)));
+      def.filter(t) || (t.status === "completed" && localDateOf(t.completedAt) === today)));
     tasks = todayAll.filter(t => t.status !== "completed");
     doneTasks = todayAll.filter(t => t.status === "completed");
   } else {
