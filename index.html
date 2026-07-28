@@ -490,7 +490,7 @@ svg text { user-select: none; }
 <div id="app">
   <nav id="sidebar" data-testid="sidebar">
     <div class="side-search">
-      <input id="search-input" data-testid="search-input" type="search" placeholder="検索（/）">
+      <input id="search-input" data-testid="search-input" type="search" placeholder="検索（スペースで複数語・あいまい可・/）">
     </div>
     <div class="side-sec side-sec-toggle" id="smart-sec" data-testid="smart-sec"><span class="tri">▼</span> メニュー</div>
     <div id="nav-smart"></div>
@@ -1970,15 +1970,61 @@ function renderTrash(body) {
   }
 }
 
-/* ---- 検索 ---- */
+/* ---- 検索（複数キーワードのAND検索＋あいまい一致） ---- */
+// 正規化: NFKC(全角/半角を統一)＋小文字化＋カタカナ→ひらがな（かなの種類を無視して一致させる）
+function normalizeSearch(s) {
+  return (s || "").normalize("NFKC").toLowerCase()
+    .replace(/[ァ-ヶ]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+}
+// クエリを空白（全角・半角）区切りの複数キーワードに分割
+function parseQuery(q) {
+  return normalizeSearch(q).split(/\s+/).filter(Boolean);
+}
+// あいまい一致: term が hay のどこかの部分文字列と編集距離 maxDist 以内で一致するか（タイプミス許容）。
+// 先頭行を0で初期化して「開始位置はどこでもよい」、末尾は全列の最小を取って「終了位置もどこでもよい」＝近似部分文字列一致のDP。
+function fuzzyContains(hay, term, maxDist) {
+  const n = term.length, m = hay.length;
+  if (n === 0) return true;
+  if (m + maxDist < n) return false;
+  let prev = new Array(m + 1).fill(0);
+  for (let i = 1; i <= n; i++) {
+    const cur = new Array(m + 1);
+    cur[0] = i;
+    const tc = term.charCodeAt(i - 1);
+    for (let j = 1; j <= m; j++) {
+      const cost = tc === hay.charCodeAt(j - 1) ? 0 : 1;
+      const a = prev[j - 1] + cost, b = prev[j] + 1, c = cur[j - 1] + 1;
+      cur[j] = a < b ? (a < c ? a : c) : (b < c ? b : c);
+    }
+    prev = cur;
+  }
+  let best = Infinity;
+  for (let j = Math.max(0, n - maxDist); j <= m; j++) if (prev[j] < best) best = prev[j];
+  return best <= maxDist;
+}
+// キーワードの許容タイプミス数（短い語は誤爆防止で厳しめ、長い語ほど緩める）
+function fuzzyThreshold(term) {
+  if (term.length <= 3) return 0;
+  if (term.length <= 6) return 1;
+  return 2;
+}
+// 全キーワードがマッチするか（AND）。各キーワードは「全文への部分一致」か「短い文（タイトル等）へのあいまい一致」でOK。
+function matchesAllTerms(terms, hayFull, hayShort) {
+  return terms.every(term => {
+    if (hayFull.includes(term)) return true;
+    const th = fuzzyThreshold(term);
+    return th > 0 && fuzzyContains(hayShort, term, th);
+  });
+}
 function renderSearch(body) {
-  const q = (view.q || "").toLowerCase();
-  if (!q) { body.innerHTML = `<div class="empty-msg">検索語を入力してください</div>`; return; }
-  const tasks = liveTasks().filter(t =>
-    t.title.toLowerCase().includes(q) || (t.note || "").toLowerCase().includes(q) ||
-    (t.tags || []).some(tag => tag.toLowerCase().includes(q)));
-  const memos = state.memos.filter(m => !m.deletedAt && (m.title.toLowerCase().includes(q) || (m.body || "").toLowerCase().includes(q)));
-  const projs = visibleProjects().filter(p => p.name.toLowerCase().includes(q));
+  const terms = parseQuery(view.q || "");
+  if (!terms.length) { body.innerHTML = `<div class="empty-msg">検索語を入力してください</div>`; return; }
+  const tasks = liveTasks().filter(t => matchesAllTerms(terms,
+    normalizeSearch(t.title + " " + (t.note || "") + " " + (t.tags || []).join(" ")),
+    normalizeSearch(t.title + " " + (t.tags || []).join(" "))));
+  const memos = state.memos.filter(m => !m.deletedAt && matchesAllTerms(terms,
+    normalizeSearch((m.title || "") + " " + (m.body || "")), normalizeSearch(m.title || "")));
+  const projs = visibleProjects().filter(p => matchesAllTerms(terms, normalizeSearch(p.name), normalizeSearch(p.name)));
 
   if (projs.length) {
     body.insertAdjacentHTML("beforeend", `<div class="sec-head">プロジェクト</div>`);
