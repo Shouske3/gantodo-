@@ -668,6 +668,17 @@ function addDays(s, n) {
   d.setDate(d.getDate() + n);
   return fmtDate(d);
 }
+// n ヶ月後（実際のカレンダー月で計算）。対象月に無い日（例:1/31の翌月）は月末に丸める。
+// Date.setMonth は「2/31」を3/3にオーバーフローさせて月を飛ばすため、その回避としてまず1日にしてから月を進め、月末でクランプする。
+function addMonths(s, n) {
+  const d = parseDate(s);
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + n);
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); // 対象月の末日
+  d.setDate(Math.min(day, lastDay));
+  return fmtDate(d);
+}
 function diffDays(a, b) { // a - b（日数）
   return Math.round((parseDate(a) - parseDate(b)) / 86400000);
 }
@@ -927,6 +938,15 @@ function hasTodayReason(t) {
   if (state.today.manualAdded.includes(t.id)) return true;
   return false;
 }
+// 今日が実施期間（開始日〜終了日）の中にあるか。開始日/終了日のうち設定されている境界だけで判定し、
+// どちらも無ければ「期間中ではない」とみなす（待機中＝対応待ちの表示条件に使う）。
+function todayWithinPeriod(t) {
+  const today = todayStr();
+  if (!t.startDate && !t.endDate) return false;
+  if (t.startDate && today < t.startDate) return false;
+  if (t.endDate && today > t.endDate) return false;
+  return true;
+}
 // 期限切れ（アクティブで、納期または終了日が今日より前）。バッジ表示・期限超過リスト・件数で共通利用。
 function isOverdue(t) {
   const today = todayStr();
@@ -1057,14 +1077,10 @@ function nextRepeatDate(base, rep) {
     return addDays(base, 7 * rep.interval);
   }
   if (rep.unit === "month") {
-    const dt = parseDate(base);
-    dt.setMonth(dt.getMonth() + rep.interval);
-    return fmtDate(dt);
+    return addMonths(base, rep.interval); // カレンダー月で計算（31日ある月なども正しく、月末クランプ）
   }
   if (rep.unit === "year") {
-    const dt = parseDate(base);
-    dt.setFullYear(dt.getFullYear() + rep.interval);
-    return fmtDate(dt);
+    return addMonths(base, rep.interval * 12); // 1年=12ヶ月。2/29→平年は2/28に丸める
   }
   return base;
 }
@@ -1463,16 +1479,15 @@ function restoreTask(id) {
   t.deletedAt = null; touch(t);
   commit();
 }
-// 先送り: 期日・実施期間を n 日ずらす
+// 先送り（「明日へ」）: 納期ではなく実施期間（開始日・終了日）を対象日（今日+n）へ動かす。
+// 開始日を対象日にし、終了日が対象日より前（単日または過去終了）なら終了日も対象日に揃える（複数日の期間は長さを保つ）。
+// 納期(dueDate)は変更しない。
 function postponeTask(id, n) {
   const t = getTask(id);
   if (!t) return;
-  if (t.dueDate) t.dueDate = addDays(t.dueDate, n);
-  if (t.startDate && t.endDate) {
-    // 実施期間はまるごとシフト（期間内が「今日やる理由」になっている場合に有効）
-    if (t.startDate <= todayStr()) { t.startDate = addDays(todayStr(), n); }
-    if (t.endDate < t.startDate) t.endDate = t.startDate;
-  }
+  const target = addDays(todayStr(), n);
+  t.startDate = target;
+  if (!t.endDate || t.endDate < target) t.endDate = target;
   state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
   state.today.updatedAt = nowISO();
   touch(t);
@@ -3041,8 +3056,10 @@ function renderToday(body, actions) {
     appendTaskKids(listWrap, t, 0, { showProject: false, dnd: true }); // サブタスクもD&D可能なツリー表示
   }
 
-  // 待機中（ブロック中/開始可能日前で今日やる理由のあるもの・人に任せて返信待ちのもの）をまとめて参考表示
-  const waitingTasks = activeTasks().filter(t => t.waitingOnOther || (!canStart(t) && hasTodayReason(t)));
+  // 待機中（ブロック中/開始可能日前で今日やる理由のあるもの・人に任せて返信待ちのもの）をまとめて参考表示。
+  // 対応待ち（人に任せた）タスクは「今日が実施期間中のもの」だけに絞る（期間外＝今日やる予定でないものは出さない）。
+  const waitingTasks = activeTasks().filter(t =>
+    t.waitingOnOther ? todayWithinPeriod(t) : (!canStart(t) && hasTodayReason(t)));
   if (waitingTasks.length) {
     body.insertAdjacentHTML("beforeend", `<div class="today-head" data-testid="waiting-head">🔒 待機中（着手不可・返信待ちのため一覧外）</div>`);
     for (const t of waitingTasks) {
