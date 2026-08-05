@@ -804,23 +804,28 @@ function base64ToBlob(b64, mime) {
   return new Blob([bytes], { type: mime || "application/octet-stream" });
 }
 // 送信用: 生存タスクの添付を新しい順に集め、上限に収まる分だけbase64化する
-async function collectAttachmentFilesForSync() {
+// 同期に載せる添付ファイルを集める。alreadyOnServer（サーバーが本体を保持済みのidの集合）が渡された場合は、
+// そのファイルの本体は読み込まず送らない（idだけ fileIds に入れて保持対象にする）＝差分同期でモバイルの送信量を減らす。
+// 返り値 files=送る本体（新規のみ）／fileIds=サーバーに保持させる全id／skipped=容量超過で今回見送った件数。
+async function collectAttachmentFilesForSync(alreadyOnServer) {
   const metas = [];
   for (const t of liveTasks()) for (const a of t.attachments || []) metas.push(a);
   metas.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-  const files = [];
+  const files = [], fileIds = [];
   let total = 0, skipped = 0;
   for (const a of metas) {
+    if (alreadyOnServer && alreadyOnServer.has(a.id)) { fileIds.push(a.id); continue; } // 本体はサーバー保持済み→再送しない
     if (total + (a.size || 0) * 1.37 > ATTACHMENT_SYNC_CAP_BYTES) { skipped++; continue; }
     try {
       const blob = await fileGet(a.id);
       if (!blob) continue;
       const data = await blobToBase64(blob);
       files.push({ id: a.id, mime: blob.type, data, createdAt: a.createdAt || nowISO() });
+      fileIds.push(a.id);
       total += data.length;
     } catch { skipped++; }
   }
-  return { files, skipped };
+  return { files, fileIds, skipped };
 }
 // 受信用: ローカルにまだない実体だけIndexedDBへ保存する（内容は不変なので上書きしない）
 async function applyIncomingFiles(remoteFiles) {
@@ -4243,6 +4248,8 @@ function mergeById(localArr, remoteArr, resetAt) {
 }
 let syncInFlight = false;
 let autoSyncTimer = null;
+let syncServerSupportsFilesMerge = false; // サーバー(GAS)が添付の差分同期に対応しているか（pullのfilesMergeフラグで判明）
+let syncServerFileIds = null;             // 直近pullで判明したサーバー側の添付ファイルid集合（差分pushで再送を省くのに使う）
 
 // 同期先へ現在のstateを一方的に書き込む（pull/mergeなし）。全データリセット専用。
 // 通常のsyncNow()はpull→mergeするため、リセット後にこれを使わず放置すると
@@ -4295,8 +4302,11 @@ async function syncNow(statusEl, opts = {}) {
     });
     const pull = await pullRes.json();
     if (pull.error) throw new Error(pull.error);
+    syncServerSupportsFilesMerge = !!pull.filesMerge; // 新GAS（差分同期対応）かどうか
+    syncServerFileIds = new Set();
     if (pull.data) {
       const r = pull.data;
+      syncServerFileIds = new Set((r.files || []).map(f => f.id)); // サーバーが既に持つ添付id
       // 自分・相手のどちらか新しい方の「全データリセット」時刻を採用する。
       // mergeByIdはこれより古い更新日時の「ローカルにしかない項目」を復活させない
       // （updatedAtだけのマージだと、リセット後に古いデータを持つ端末が
@@ -4323,14 +4333,18 @@ async function syncNow(statusEl, opts = {}) {
       }
       await applyIncomingFiles(r.files); // 相手が持つ添付の実体でローカルにまだないものを取り込む
     }
-    const { files, skipped } = await collectAttachmentFilesForSync();
+    // サーバーが差分同期対応なら、既にサーバーにある添付は本体を再送しない（モバイルの送信失敗対策）。
+    const known = syncServerSupportsFilesMerge ? (syncServerFileIds || new Set()) : null;
+    const { files, fileIds, skipped } = await collectAttachmentFilesForSync(known);
     if (skipped && !quiet) toast(`⚠ 添付ファイルが大きすぎるため${skipped}件は今回同期されませんでした`, "warn");
+    const pushBody = { key: gasKey, action: "push", data: {
+      projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
+      files, resetAt: state.resetAt, today: state.today,
+    } };
+    if (syncServerSupportsFilesMerge) { pushBody.filesMerge = true; pushBody.fileIds = fileIds; }
     const pushRes = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ key: gasKey, action: "push", data: {
-        projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
-        files, resetAt: state.resetAt, today: state.today,
-      } }),
+      body: JSON.stringify(pushBody),
     });
     const push = await pushRes.json();
     if (push.error) throw new Error(push.error);
