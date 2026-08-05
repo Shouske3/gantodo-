@@ -36,11 +36,25 @@ function doPost(e) {
 
   if (req.action === "pull") {
     const data = readData_();
-    return json_({ data });
+    // filesMerge: このGASが添付ファイルの差分同期に対応していることをクライアントに知らせるフラグ。
+    // 対応クライアントは、次のpushで「新規ファイルの本体」と「保持するファイルid一覧」だけを送り、変更のない添付を再送しない。
+    return json_({ data: data, filesMerge: true });
   }
 
   if (req.action === "push") {
-    writeData_(req.data || {});
+    const incoming = req.data || {};
+    if (req.filesMerge) {
+      // 添付ファイルの差分同期: 既存ファイルのうち fileIds に含まれるものを残し、送られてきた新規ファイルを加える。
+      // これによりクライアントは変更のない添付（数MBになりうる）を毎回再送しなくて済む（特にモバイル回線の送信失敗対策）。
+      const existing = readData_() || {};
+      const keep = {};
+      (req.fileIds || []).forEach(function (id) { keep[id] = true; });
+      const byId = {};
+      (existing.files || []).forEach(function (f) { if (keep[f.id]) byId[f.id] = f; });
+      (incoming.files || []).forEach(function (f) { byId[f.id] = f; });
+      incoming.files = Object.keys(byId).map(function (k) { return byId[k]; });
+    }
+    writeData_(incoming);
     return json_({ ok: true, savedAt: new Date().toISOString() });
   }
 
