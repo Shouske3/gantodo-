@@ -598,6 +598,7 @@ function loadState() {
     s.memos = s.memos.filter(m => !m.deletedAt || m.deletedAt.slice(0, 10) >= limit);
     // サブタスクのプロジェクトを最上位の親に揃える（過去データの補正）
     fixSubtaskProjects(s.tasks);
+    for (const t of s.tasks) normalizeTask(t); // 壊れた/不完全なタスクを既定値で補正
     return s;
   } catch (e) {
     console.error("loadState failed", e);
@@ -619,6 +620,22 @@ function fixSubtaskProjects(tasks) {
     const pid = root.projectId || null;
     if ((t.projectId || null) !== pid) { t.projectId = pid; t.sectionId = null; t.updatedAt = nowISO(); }
   }
+}
+
+// 壊れた/不完全なタスクの必須フィールドを既定値で補う（読み込み時・同期後に適用）。
+// 例: statusがundefinedだと activeTasks() から漏れて今日すること等に出なくなる、progressがundefinedだと「undefined%」表示になる、
+// tags/blockedBy/attachmentsがundefinedだと配列操作で例外になる、といった不具合を防ぐ。updatedAtは変えない（同期の余計な競合を避ける）。
+const TASK_STATUSES = ["active", "completed", "deleted", "abandoned"];
+function normalizeTask(t) {
+  if (!t) return t;
+  if (!TASK_STATUSES.includes(t.status)) t.status = "active"; // 不明/欠落は「着手可能」扱いに寄せる（隠れるより出す方が安全）
+  if (typeof t.progress !== "number") t.progress = t.status === "completed" ? 100 : 0;
+  if (!Array.isArray(t.tags)) t.tags = [];
+  if (!Array.isArray(t.blockedBy)) t.blockedBy = [];
+  if (!Array.isArray(t.attachments)) t.attachments = [];
+  if (t.priority == null) t.priority = "none";
+  if (t.waitingOnOther == null) t.waitingOnOther = false;
+  return t;
 }
 
 function save() {
@@ -4317,6 +4334,7 @@ async function syncNow(statusEl, opts = {}) {
       state.projects = mergeById(state.projects, r.projects, effectiveResetAt);
       state.sections = mergeById(state.sections, r.sections, effectiveResetAt);
       state.tasks = mergeById(state.tasks, r.tasks, effectiveResetAt);
+      state.tasks.forEach(normalizeTask); // 相手から来た不完全なタスクも既定値で補正
       state.memos = mergeById(state.memos, r.memos, effectiveResetAt);
       state.resetAt = effectiveResetAt;
       // 「今日すること」の並び順も同期する。配列のmergeByIdとは違い単一オブジェクトなので、
