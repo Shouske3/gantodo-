@@ -406,6 +406,9 @@ svg text { user-select: none; }
 #tm-note-view code { background: var(--bg2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
 #tm-note-view a { color: var(--accent); }
 #tm-note-view p { margin: 4px 0; }
+/* メモプレビュー共通: 区切り線(---)と、空白行の余白(md-blank) */
+#tm-note-view hr, #memo-preview hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+#tm-note-view .md-blank, #memo-preview .md-blank { height: 1em; }
 /* 添付 */
 .att-item {
   display: flex; align-items: center; gap: 8px; padding: 5px 8px;
@@ -3694,8 +3697,14 @@ function renderMarkdown(src, opts = {}) {
     } else if ((mch = line.match(/^\s*[-*]\s+(.*)/))) {
       if (!inList) { html += "<ul>"; inList = true; }
       html += `<li>${inline(mch[1])}</li>`;
-    } else if (line.trim() === "") {
+    } else if (line.trim().match(/^-{3,}$/)) {
+      // 区切り線: 「---」（ハイフン3つ以上だけの行）を <hr> にする
       closeList();
+      html += `<hr>`;
+    } else if (line.trim() === "") {
+      // 空白行は詰めずに、そのぶんの縦の余白を残す（入力したメモの改行構造をプレビューでも保つ）
+      closeList();
+      html += `<div class="md-blank"></div>`;
     } else {
       closeList();
       html += `<p>${inline(line)}</p>`;
