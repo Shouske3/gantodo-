@@ -865,7 +865,7 @@ async function fetchMissingFiles(gasUrl, gasKey, serverFileIds) {
   if (!serverFileIds || !serverFileIds.size) return;
   const have = new Set(await fileKeys());
   const missing = [...serverFileIds].filter(id => !have.has(id));
-  const BATCH = 3; // 1回のgetFilesで受け取る添付数（1リクエストを数MB以下に保つ）
+  const BATCH = 2; // 1回のgetFilesで受け取る添付数（1画像が最大~1MBありうるので2件＝~2MB以下に抑える）
   for (let i = 0; i < missing.length; i += BATCH) {
     const ids = missing.slice(i, i + BATCH);
     try {
@@ -4342,7 +4342,7 @@ async function syncNow(statusEl, opts = {}) {
   const quiet = !!opts.quiet;
   const { gasUrl, gasKey } = state.settings;
   if (!gasUrl) { if (!quiet) toast("GAS WebアプリURLを設定してください", "warn"); return; }
-  if (syncInFlight) return;
+  if (syncInFlight) { if (!quiet) toast("すでに同期を実行中です。完了までお待ちください", "warn"); return; }
   syncInFlight = true;
   clearTimeout(autoSyncTimer);
   // 表示要素は書き込みのたびに取得する（途中でrender()が走ると要素が作り直されるため）
@@ -4426,7 +4426,9 @@ async function syncNow(statusEl, opts = {}) {
     setStatus("✔ 同期完了 " + new Date().toLocaleTimeString());
     if (!quiet) toast("同期が完了しました");
   } catch (e) {
-    setStatus("✖ 失敗");
+    // どの段階でどのエラーが出たかをステータス欄にも残す（自動同期＝トーストが出ない失敗も見えるように）
+    window.__lastSyncError = `[${step}/${e.name || "Error"}] ${e.message}`;
+    setStatus(`✖ 失敗[${step}] ${e.name || "Error"}`);
     if (!quiet) toast(`同期失敗[${step}/${e.name || "Error"}]: ${e.message}`, "error");
   } finally {
     syncInFlight = false;
