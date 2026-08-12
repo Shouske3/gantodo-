@@ -804,6 +804,17 @@ async function fileDelete(id) {
     tx.onerror = () => rej(tx.error);
   });
 }
+// ローカル(IndexedDB)に実体を持っている添付ファイルidの一覧。差分pullで「既に持っている添付は送らないで」とサーバーに伝えるのに使う。
+async function fileKeys() {
+  try {
+    const db = await idbOpen();
+    return await new Promise((res) => {
+      const rq = db.transaction("files").objectStore("files").getAllKeys();
+      rq.onsuccess = () => res((rq.result || []).map(String));
+      rq.onerror = () => res([]);
+    });
+  } catch { return []; }
+}
 
 /* ---- 添付ファイルの実体を同期ペイロードに含める（iPhone⇔PC間で画像等を共有するため） ----
    Google Sheets/Apps Script側の負荷・速度を考えて合計サイズに上限を設け、
@@ -4320,19 +4331,25 @@ async function syncNow(statusEl, opts = {}) {
     if (el) el.textContent = s;
   };
   setStatus("同期中...");
+  let step = "pull"; // どの段階で失敗したかを失敗トーストに出すためのマーカー
   try {
+    // 差分pull: 既にローカルに持っている添付idを渡し、その本体は受け取らない（受信量削減）
+    const haveFileIds = await fileKeys();
     // text/plain でPOSTするとCORSプリフライトを回避できる（GASの制約対応）
     const pullRes = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ key: gasKey, action: "pull" }),
+      body: JSON.stringify({ key: gasKey, action: "pull", haveFileIds }),
     });
+    step = "pull-parse";
     const pull = await pullRes.json();
     if (pull.error) throw new Error(pull.error);
+    step = "merge";
     syncServerSupportsFilesMerge = !!pull.filesMerge; // 新GAS（差分同期対応）かどうか
     syncServerFileIds = new Set();
     if (pull.data) {
       const r = pull.data;
-      syncServerFileIds = new Set((r.files || []).map(f => f.id)); // サーバーが既に持つ添付id
+      // 差分pull対応GASはallFileIds（サーバーの全添付id）を返す。未対応なら受け取ったfilesのidで代用。
+      syncServerFileIds = new Set(Array.isArray(r.allFileIds) ? r.allFileIds : (r.files || []).map(f => f.id));
       // 自分・相手のどちらか新しい方の「全データリセット」時刻を採用する。
       // mergeByIdはこれより古い更新日時の「ローカルにしかない項目」を復活させない
       // （updatedAtだけのマージだと、リセット後に古いデータを持つ端末が
@@ -4358,9 +4375,11 @@ async function syncNow(statusEl, opts = {}) {
           state.today = r.today;
         }
       }
+      step = "apply-files";
       await applyIncomingFiles(r.files); // 相手が持つ添付の実体でローカルにまだないものを取り込む
     }
     // サーバーが差分同期対応なら、既にサーバーにある添付は本体を再送しない（モバイルの送信失敗対策）。
+    step = "collect";
     const known = syncServerSupportsFilesMerge ? (syncServerFileIds || new Set()) : null;
     const { files, fileIds, skipped } = await collectAttachmentFilesForSync(known);
     if (skipped && !quiet) toast(`⚠ 添付ファイルが大きすぎるため${skipped}件は今回同期されませんでした`, "warn");
@@ -4369,12 +4388,15 @@ async function syncNow(statusEl, opts = {}) {
       files, resetAt: state.resetAt, today: state.today,
     } };
     if (syncServerSupportsFilesMerge) { pushBody.filesMerge = true; pushBody.fileIds = fileIds; }
+    step = "push";
     const pushRes = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
       body: JSON.stringify(pushBody),
     });
+    step = "push-parse";
     const push = await pushRes.json();
     if (push.error) throw new Error(push.error);
+    step = "render";
     save();
     // 入力中に画面を作り直すとフォーカスが失われるため、編集中は再描画を控える
     const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
@@ -4383,7 +4405,7 @@ async function syncNow(statusEl, opts = {}) {
     if (!quiet) toast("同期が完了しました");
   } catch (e) {
     setStatus("✖ 失敗");
-    if (!quiet) toast("同期失敗: " + e.message, "error");
+    if (!quiet) toast(`同期失敗[${step}/${e.name || "Error"}]: ${e.message}`, "error");
   } finally {
     syncInFlight = false;
   }
