@@ -858,6 +858,26 @@ async function collectAttachmentFilesForSync(alreadyOnServer) {
   }
   return { files, fileIds, skipped };
 }
+// サーバーが持つ添付のうち、ローカルにまだ無いものだけを「小さなバッチ」で取得して保存する。
+// pullに全添付を載せると受信データが数十MBになりiPhone(Safari)がpull-parseで失敗するため、添付はこの別経路で少しずつ受け取る。
+// バッチが失敗しても致命的にせず（次回同期でリトライ）、コアデータ（タスク/メモ）の同期は必ず成立させる。
+async function fetchMissingFiles(gasUrl, gasKey, serverFileIds) {
+  if (!serverFileIds || !serverFileIds.size) return;
+  const have = new Set(await fileKeys());
+  const missing = [...serverFileIds].filter(id => !have.has(id));
+  const BATCH = 3; // 1回のgetFilesで受け取る添付数（1リクエストを数MB以下に保つ）
+  for (let i = 0; i < missing.length; i += BATCH) {
+    const ids = missing.slice(i, i + BATCH);
+    try {
+      const res = await fetch(gasUrl, {
+        method: "POST", headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ key: gasKey, action: "getFiles", ids }),
+      });
+      const j = await res.json();
+      await applyIncomingFiles(j.files || []);
+    } catch { /* このバッチは次回同期でリトライ */ }
+  }
+}
 // 受信用: ローカルにまだない実体だけIndexedDBへ保存する（内容は不変なので上書きしない）
 async function applyIncomingFiles(remoteFiles) {
   if (!remoteFiles || !remoteFiles.length) return;
@@ -4333,12 +4353,11 @@ async function syncNow(statusEl, opts = {}) {
   setStatus("同期中...");
   let step = "pull"; // どの段階で失敗したかを失敗トーストに出すためのマーカー
   try {
-    // 差分pull: 既にローカルに持っている添付idを渡し、その本体は受け取らない（受信量削減）
-    const haveFileIds = await fileKeys();
+    // pullは添付本体を載せず軽く受け取る（skipFiles）。添付は後で getFiles で小分けに取得する。
     // text/plain でPOSTするとCORSプリフライトを回避できる（GASの制約対応）
     const pullRes = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ key: gasKey, action: "pull", haveFileIds }),
+      body: JSON.stringify({ key: gasKey, action: "pull", skipFiles: true }),
     });
     step = "pull-parse";
     const pull = await pullRes.json();
@@ -4348,7 +4367,7 @@ async function syncNow(statusEl, opts = {}) {
     syncServerFileIds = new Set();
     if (pull.data) {
       const r = pull.data;
-      // 差分pull対応GASはallFileIds（サーバーの全添付id）を返す。未対応なら受け取ったfilesのidで代用。
+      // skipFiles対応GASはallFileIds（サーバーの全添付id）を返す。未対応（旧GAS）なら受け取ったfilesのidで代用。
       syncServerFileIds = new Set(Array.isArray(r.allFileIds) ? r.allFileIds : (r.files || []).map(f => f.id));
       // 自分・相手のどちらか新しい方の「全データリセット」時刻を採用する。
       // mergeByIdはこれより古い更新日時の「ローカルにしかない項目」を復活させない
@@ -4376,8 +4395,11 @@ async function syncNow(statusEl, opts = {}) {
         }
       }
       step = "apply-files";
-      await applyIncomingFiles(r.files); // 相手が持つ添付の実体でローカルにまだないものを取り込む
+      await applyIncomingFiles(r.files); // 旧GAS互換: pullに添付が載って来た場合はここで取り込む（skipFiles対応GASでは空）
     }
+    // 添付本体は別経路で小分けに取得する（pullを軽く保つ）。バッチ失敗は非致命（次回リトライ）。
+    step = "fetch-files";
+    await fetchMissingFiles(gasUrl, gasKey, syncServerFileIds);
     // サーバーが差分同期対応なら、既にサーバーにある添付は本体を再送しない（モバイルの送信失敗対策）。
     step = "collect";
     const known = syncServerSupportsFilesMerge ? (syncServerFileIds || new Set()) : null;
