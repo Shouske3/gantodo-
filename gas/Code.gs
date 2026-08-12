@@ -36,6 +36,14 @@ function doPost(e) {
 
   if (req.action === "pull") {
     const data = readData_();
+    // 差分pull: クライアントが既に持っている添付id(haveFileIds)の本体は送らない（受信量を減らす＝モバイルで巨大データの受信失敗を防ぐ）。
+    // allFileIds でサーバーが持つ全添付idは伝える（クライアントは差分pushの判定に使う）。
+    if (data && data.files && data.files.length && req.haveFileIds && req.haveFileIds.length) {
+      var have = {};
+      for (var i = 0; i < req.haveFileIds.length; i++) have[req.haveFileIds[i]] = true;
+      data.allFileIds = data.files.map(function (f) { return f.id; });
+      data.files = data.files.filter(function (f) { return !have[f.id]; });
+    }
     // filesMerge: このGASが添付ファイルの差分同期に対応していることをクライアントに知らせるフラグ。
     // 対応クライアントは、次のpushで「新規ファイルの本体」と「保持するファイルid一覧」だけを送り、変更のない添付を再送しない。
     return json_({ data: data, filesMerge: true });
