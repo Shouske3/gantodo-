@@ -36,17 +36,34 @@ function doPost(e) {
 
   if (req.action === "pull") {
     const data = readData_();
-    // 差分pull: クライアントが既に持っている添付id(haveFileIds)の本体は送らない（受信量を減らす＝モバイルで巨大データの受信失敗を防ぐ）。
-    // allFileIds でサーバーが持つ全添付idは伝える（クライアントは差分pushの判定に使う）。
-    if (data && data.files && data.files.length && req.haveFileIds && req.haveFileIds.length) {
-      var have = {};
-      for (var i = 0; i < req.haveFileIds.length; i++) have[req.haveFileIds[i]] = true;
-      data.allFileIds = data.files.map(function (f) { return f.id; });
-      data.files = data.files.filter(function (f) { return !have[f.id]; });
+    // 受信量の削減（モバイルで巨大データの受信/解析失敗＝pull-parseエラーを防ぐ）。
+    // 添付の本体はpullに載せず、別途 getFiles で小分けに取得する。allFileIds で全添付idだけ伝える。
+    if (data && data.files) {
+      var allIds = data.files.map(function (f) { return f.id; });
+      if (req.skipFiles) {
+        // 添付本体を一切返さない（タスク・メモだけの軽いpull）。
+        data.allFileIds = allIds;
+        data.files = [];
+      } else if (req.haveFileIds && req.haveFileIds.length) {
+        // 差分pull: 既に持っている添付の本体は返さない（後方互換用）。
+        var have = {};
+        for (var i = 0; i < req.haveFileIds.length; i++) have[req.haveFileIds[i]] = true;
+        data.allFileIds = allIds;
+        data.files = data.files.filter(function (f) { return !have[f.id]; });
+      }
     }
     // filesMerge: このGASが添付ファイルの差分同期に対応していることをクライアントに知らせるフラグ。
     // 対応クライアントは、次のpushで「新規ファイルの本体」と「保持するファイルid一覧」だけを送り、変更のない添付を再送しない。
     return json_({ data: data, filesMerge: true });
+  }
+
+  if (req.action === "getFiles") {
+    // 添付ファイルの本体を、指定されたidの分だけ小分けに返す（pullを軽く保つための別経路）。
+    const data = readData_() || {};
+    var want = {};
+    (req.ids || []).forEach(function (id) { want[id] = true; });
+    var files = (data.files || []).filter(function (f) { return want[f.id]; });
+    return json_({ files: files });
   }
 
   if (req.action === "push") {
