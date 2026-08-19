@@ -176,6 +176,10 @@ function upsertCalendarEvent_(req) {
       // リマインダー設定に非対応の環境などは無視（予定自体の作成は成功させる）
     }
   }
+  // メモ欄（親タスクなど）。文字列が渡された時だけ設定（空文字なら空にする）。
+  if (typeof req.description === "string") {
+    try { event.setDescription(req.description); } catch (err) {}
+  }
   return event.getId();
 }
 function deleteCalendarEvent_(eventId) {
