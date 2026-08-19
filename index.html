@@ -1224,6 +1224,18 @@ function isCalendarEligible(t) {
 function maybeQueueCalendarSync(t) {
   if (isCalendarEligible(t) || t.gcalEventId) queueCalendarSync(t.id);
 }
+// カレンダーのメモ欄に載せる親タスク表示。祖先を上位→直近の順に「›」で連結（親が無ければ空文字）。
+function parentChainLabel(t) {
+  const names = [];
+  const seen = new Set([t.id]);
+  let p = t.parentTaskId ? getTask(t.parentTaskId) : null;
+  while (p && !p.deletedAt && !seen.has(p.id)) {
+    seen.add(p.id);
+    names.unshift(p.title);
+    p = p.parentTaskId ? getTask(p.parentTaskId) : null;
+  }
+  return names.length ? "親タスク: " + names.join(" › ") : "";
+}
 
 /* ---- Googleカレンダー連携: 開始日時刻と終了日時刻の両方があればその区間そのままの予定、
    終了日時刻だけあればその時刻から1時間の予定、時刻指定が無く開始日・終了日だけあれば
@@ -1279,14 +1291,16 @@ async function syncTaskToCalendar(t) {
       }
       return;
     }
+    // カレンダーのメモ欄に親タスクを記載する（親が無ければ空文字＝メモなし）
+    const description = parentChainLabel(t);
     // GAS実行環境のタイムゾーンに依存しないよう明示的に+09:00(JST)を付与する
     const body = (t.startDate && t.startTime && t.endTime)
-      ? { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
+      ? { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title, description,
           startISO: `${t.startDate}T${t.startTime}:00+09:00`, endISO: `${t.endDate}T${t.endTime}:00+09:00` }
       : t.endTime
-        ? { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
+        ? { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title, description,
             startISO: `${t.endDate}T${t.endTime}:00+09:00`, durationMinutes: 60 }
-        : { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title,
+        : { key: gasKey, action: "gcalUpsert", eventId: t.gcalEventId || null, title: t.title, description,
             allDay: true, startDate: t.startDate, endDate: t.endDate };
     const res = await fetch(gasUrl, {
       method: "POST", headers: { "Content-Type": "text/plain" },
@@ -2079,9 +2093,37 @@ function fuzzyThreshold(term) {
   if (term.length <= 6) return 1;
   return 2;
 }
+// 日付キーワード（2026/09/01・2026-9-1 など）を YYYY-MM-DD に正規化。日付でなければ null。
+function parseDateTerm(term) {
+  const m = term.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+  if (!m) return null;
+  const mo = +m[2], d = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return `${m[1]}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+// タスクが指定日に該当するか（開始日＝その日・終了日＝その日・開始日〜終了日の期間内・納期＝その日 のいずれか）
+function taskMatchesDate(t, date) {
+  if (t.dueDate === date) return true;
+  if (t.startDate && t.endDate) return t.startDate <= date && date <= t.endDate;
+  if (t.startDate) return t.startDate === date;
+  if (t.endDate) return t.endDate === date;
+  return false;
+}
 // 全キーワードがマッチするか（AND）。各キーワードは「全文への部分一致」か「短い文（タイトル等）へのあいまい一致」でOK。
+// 日付キーワードはタスク専用なので、メモ・プロジェクト用のこの関数では不一致（false）にする。
 function matchesAllTerms(terms, hayFull, hayShort) {
   return terms.every(term => {
+    if (parseDateTerm(term)) return false;
+    if (hayFull.includes(term)) return true;
+    const th = fuzzyThreshold(term);
+    return th > 0 && fuzzyContains(hayShort, term, th);
+  });
+}
+// タスク用: 日付キーワードは「その日に該当するか」、それ以外は文字一致であいまい込みで判定（全キーワードAND）。
+function taskMatchesAllTerms(terms, t, hayFull, hayShort) {
+  return terms.every(term => {
+    const date = parseDateTerm(term);
+    if (date) return taskMatchesDate(t, date);
     if (hayFull.includes(term)) return true;
     const th = fuzzyThreshold(term);
     return th > 0 && fuzzyContains(hayShort, term, th);
@@ -2090,7 +2132,7 @@ function matchesAllTerms(terms, hayFull, hayShort) {
 function renderSearch(body) {
   const terms = parseQuery(view.q || "");
   if (!terms.length) { body.innerHTML = `<div class="empty-msg">検索語を入力してください</div>`; return; }
-  const tasks = liveTasks().filter(t => matchesAllTerms(terms,
+  const tasks = liveTasks().filter(t => taskMatchesAllTerms(terms, t,
     normalizeSearch(t.title + " " + (t.note || "") + " " + (t.tags || []).join(" ")),
     normalizeSearch(t.title + " " + (t.tags || []).join(" "))));
   const memos = state.memos.filter(m => !m.deletedAt && matchesAllTerms(terms,
