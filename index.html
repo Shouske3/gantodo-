@@ -2006,9 +2006,10 @@ function renderSmart(body, actions, title) {
     doneTasks = all.filter(t => t.status === "completed");
   } else if (view.smart === "today" && !state.settings.todayHideDone) {
     // Todayページは完了タスクも消さず、末尾の「完了」セクションに表示する（「完了を隠す」がONなら隠す）。
-    // 対象＝今日やる理由があるタスク、または今日完了したタスク。
+    // 未完了＝今日やる理由があるタスク。完了＝今日が実施期間（開始日〜終了日）の中にあるタスクだけ
+    // （期間が今日を含まない過去の完了タスクは「今日の完了」ではないので出さない）。
     const todayAll = excludeNested(liveTasks().filter(t =>
-      def.filter(t) || (t.status === "completed" && localDateOf(t.completedAt) === today)));
+      t.status === "completed" ? todayWithinPeriod(t) : def.filter(t)));
     tasks = todayAll.filter(t => t.status !== "completed");
     doneTasks = todayAll.filter(t => t.status === "completed");
   } else {
