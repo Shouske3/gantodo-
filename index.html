@@ -4440,9 +4440,6 @@ async function syncNow(statusEl, opts = {}) {
       step = "apply-files";
       await applyIncomingFiles(r.files); // 旧GAS互換: pullに添付が載って来た場合はここで取り込む（skipFiles対応GASでは空）
     }
-    // 添付本体は別経路で小分けに取得する（pullを軽く保つ）。バッチ失敗は非致命（次回リトライ）。
-    step = "fetch-files";
-    await fetchMissingFiles(gasUrl, gasKey, syncServerFileIds);
     // サーバーが差分同期対応なら、既にサーバーにある添付は本体を再送しない（モバイルの送信失敗対策）。
     step = "collect";
     const known = syncServerSupportsFilesMerge ? (syncServerFileIds || new Set()) : null;
@@ -4476,6 +4473,26 @@ async function syncNow(statusEl, opts = {}) {
   } finally {
     syncInFlight = false;
   }
+  // 添付本体の取得は「同期完了」の後で背景実行する（大量の添付があってもタスク・メモの同期＝表示更新は即完了させる）。
+  backgroundFetchMissingFiles();
+}
+// 背景で、サーバーにあってローカルに無い添付を少しずつ取得する。取り込めたら表示を更新（画像が後から出てくる）。
+let fetchFilesInFlight = false;
+async function backgroundFetchMissingFiles() {
+  if (fetchFilesInFlight) return;
+  const { gasUrl, gasKey } = state.settings;
+  if (!gasUrl || !syncServerFileIds || !syncServerFileIds.size) return;
+  fetchFilesInFlight = true;
+  try {
+    const before = (await fileKeys()).length;
+    await fetchMissingFiles(gasUrl, gasKey, syncServerFileIds);
+    const after = (await fileKeys()).length;
+    if (after > before) { // 新しく取り込んだ添付があれば再描画（入力中は避ける）
+      const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+      if (!typing) render();
+    }
+  } catch { /* 背景処理の失敗は無視（次回同期でリトライ） */ }
+  finally { fetchFilesInFlight = false; }
 }
 /*========================================================
   INIT: イベント・ショートカット・起動
