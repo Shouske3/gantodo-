@@ -1519,7 +1519,10 @@ function toggleComplete(id) {
       const nextLabel = t.dueDate || t.startDate;
       toast(nextLabel ? `🔁 完了！次回は ${fmtDispW(nextLabel)} です` : "🔁 完了！次回の予定に更新しました");
     } else {
-      toast("✔ 完了しました（繰り返しの終了日を過ぎたため、これで終了です）");
+      // untilを過ぎていて次回が作られない場合は、その理由と直し方を明示する（黙って終了すると「繰り返しが壊れた」ように見えるため）
+      toast(t.repeat.until
+        ? `✔ 完了。繰り返しの終了日（${fmtDispW(t.repeat.until)}）を過ぎているため次回は作成されません。続けるには詳細パネル→繰り返しの「終了日」を空にしてください`
+        : "✔ 完了しました（繰り返しは終了）", "warn");
     }
     return;
   }
