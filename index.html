@@ -370,9 +370,10 @@ svg text { user-select: none; }
 }
 #detail-panel.open { display: block; width: 400px; min-width: 400px; padding: 14px 16px 40px; }
 .dp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.dp-close-btn { font-size: 16px; width: 34px; height: 34px; padding: 0; line-height: 1; }
-.dp-flags { display: flex; gap: 2px; }
-.dp-status { font-size: 11px; color: var(--text-dim); }
+.dp-close-btn { font-size: 16px; width: 34px; height: 34px; padding: 0; line-height: 1; flex: none; }
+.dp-flags { display: flex; gap: 2px; flex: none; }
+.dp-status { font-size: 11px; color: var(--text-dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-head .btn.small { flex: none; }
 .dp-title {
   width: 100%; font-size: 16px; font-weight: 700;
   background: none; border: none; border-bottom: 1px solid var(--border);
@@ -571,6 +572,11 @@ function uid() {
 function shortId(id) {
   return (id || "").slice(-6);
 }
+// タスク検索の共通マッチ: 名前の部分一致、またはID下6桁で一致。
+// IDは画面上「#xxxxxx」と表示されるため、先頭に # を付けて入力しても一致させる（# を除いて比較）。qはtrim+toLowerCase済みで渡す。
+function matchTaskByNameOrId(x, q) {
+  return x.title.toLowerCase().includes(q) || shortId(x.id).includes(q.replace(/^#+/, ""));
+}
 function nowISO() { return new Date().toISOString(); }
 
 function defaultState() {
@@ -638,6 +644,11 @@ function normalizeTask(t) {
   if (!Array.isArray(t.attachments)) t.attachments = [];
   if (t.priority == null) t.priority = "none";
   if (t.waitingOnOther == null) t.waitingOnOther = false;
+  // 旧「習慣」フラグ(isHabit)の移行：ガント非表示の役割だけ引き継ぐ（カレンダー連携は新方式のopt-in=shareToCalendarに委ねる）。
+  if (t.isHabit !== undefined) {
+    if (t.hideFromGantt === undefined) t.hideFromGantt = t.isHabit;
+    delete t.isHabit;
+  }
   return t;
 }
 
@@ -1194,7 +1205,7 @@ function newTask(fields) {
     projectId: null, sectionId: null, parentTaskId: null,
     priority: "none", tags: [], assignee: "", category: "",
     startDate: null, startTime: null, endDate: null, endTime: null, dueDate: null, earliestStartDate: null,
-    blockedBy: [], isMilestone: false, waitingOnOther: false, isHabit: false, nextAction: null, repeat: null,
+    blockedBy: [], isMilestone: false, waitingOnOther: false, hideFromGantt: false, shareToCalendar: false, nextAction: null, repeat: null,
     attachments: [], collapsed: false, gcalEventId: null,
     sortOrder: nextTopSortOrder(),
     createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null,
@@ -1208,18 +1219,31 @@ function touch(t) {
   t.updatedAt = nowISO();
   maybeQueueCalendarSync(t);
 }
-// カレンダー連携の対象: 終了日時刻(endDate+endTime)がある（時間指定の予定）、
-// または開始日・終了日だけがある(endTime無し。終日の予定)、またはカレンダーに連携済みのタスク。
-// （無関係な編集のたびに毎回GASへ問い合わせるのを避けるための絞り込み）。
+// カレンダー連携の対象: **「カレンダーに共有」がONのタスクだけ**（opt-in）。加えて終了日があり、
+// 終了日時刻（時間指定の予定）または開始日（終日の予定）を持つこと。
+// 以前は全タスク自動連携だったが、章介さんの運用で「ほとんどのタスクはカレンダー不要」と判明したため
+// 明示的に共有指定したものだけ連携する方式に変更（2026-08-21）。
 // newTask()・TickTickインポートなどtouch()を経由しない新規作成パスからも呼ぶ。
 // 終了日が未来のタスクを完了にした場合は対象外（＝カレンダー予定も削除）にする：
 // 「不要になったタスクを削除せず完了にしてしまう」運用のため、まだ来ていない予定は
 // 実施されない予定として扱う。終了日が今日以前の完了（予定通り実施した記録）は残す。
 function isCalendarEligible(t) {
-  if (t.deletedAt || !t.endDate) return false;
-  if (t.isHabit) return false; // 習慣（定期）タスクはカレンダー連携しない（既に連携済みなら後続のsyncで予定を削除）
+  if (t.deletedAt || !t.shareToCalendar || !t.endDate) return false;
   if (t.status === "completed" && t.endDate > todayStr()) return false;
   return !!t.endTime || !!t.startDate;
+}
+// 旧方式（全タスク自動連携）→ 新方式（「カレンダーに共有」opt-in）への一度きりの移行掃除。
+// 共有指定していないのにカレンダー予定を持つタスク（gcalEventIdあり）の予定を削除する（章介さんの選択「いったん全部消す」）。
+// gasUrl設定済み・タスク取得済みのときに一度だけ実行し、設定フラグで再実行を防ぐ。同期後にも呼んで、pullで来たデータにも効かせる。
+function migrateCalendarOptIn() {
+  if (!state.settings.gasUrl || state.settings.calendarOptInMigrated || !state.tasks.length) return;
+  const targets = state.tasks.filter(t => t.gcalEventId && !t.shareToCalendar && !t.deletedAt);
+  targets.forEach(t => queueCalendarSync(t.id)); // 不適格＋gcalEventIdあり → syncTaskToCalendarが予定を削除
+  state.settings.calendarOptInMigrated = true;
+  save();
+  if (targets.length && document.getElementById("toasts")) {
+    toast(`カレンダー共有をopt-in方式に変更。共有OFFの${targets.length}件の予定をカレンダーから削除します`, "warn");
+  }
 }
 function maybeQueueCalendarSync(t) {
   if (isCalendarEligible(t) || t.gcalEventId) queueCalendarSync(t.id);
@@ -2265,7 +2289,8 @@ function renderDetailPanel() {
       </div>
       <span class="dp-status">${statusLine}</span>
       <button class="btn small ${t.waitingOnOther ? "primary" : ""}" data-testid="tm-delegate" title="人に任せた（返信待ち）に切り替え/解除">🤝</button>
-      <button class="btn small ${t.isHabit ? "primary" : ""}" data-testid="tm-habit" title="習慣（定期タスク）に設定/解除。習慣タスクはガントチャートに表示しません">習慣</button>
+      <button class="btn small ${t.shareToCalendar ? "primary" : ""}" data-testid="tm-share-cal" title="Googleカレンダーに共有する/しない（このタスクだけカレンダーに反映）">📅</button>
+      <button class="btn small ${t.hideFromGantt ? "primary" : ""}" data-testid="tm-hide-gantt" title="ガントチャートに表示しない/する">🚫ｶﾞﾝﾄ</button>
       <button class="btn small dp-close-btn" data-testid="tm-close" style="margin-left:auto" title="閉じる（Esc・下にスワイプでも閉じます）">✕</button>
     </div>
     ${(() => {
@@ -2346,7 +2371,7 @@ function renderDetailPanel() {
         return p && !p.deletedAt ? `<span class="dep-chip" data-dep="${id}">🔒 ${esc(p.title)} <span class="task-id-badge">#${shortId(p.id)}</span> <button data-testid="dep-remove">✕</button></span>` : "";
       }).join("")}</div>
       <div class="dep-search">
-        <input id="tm-dep-add" data-testid="tm-dep-add" placeholder="＋依存タスクを名前で検索して追加..." autocomplete="off">
+        <input id="tm-dep-add" data-testid="tm-dep-add" placeholder="＋依存タスクを名前かIDで検索して追加..." autocomplete="off">
         <div id="tm-dep-add-list" class="dep-search-list" data-testid="tm-dep-add-list"></div>
       </div>
     </div></div>
@@ -2432,7 +2457,8 @@ function renderDetailPanel() {
   }
   $("[data-testid=tm-check]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delegate]").onclick = () => toggleDelegated(t.id);
-  $("[data-testid=tm-habit]").onclick = () => apply(() => { t.isHabit = !t.isHabit; });
+  $("[data-testid=tm-share-cal]").onclick = () => apply(() => { t.shareToCalendar = !t.shareToCalendar; });
+  $("[data-testid=tm-hide-gantt]").onclick = () => apply(() => { t.hideFromGantt = !t.hideFromGantt; });
   $("[data-testid=tm-complete]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delete]").onclick = () => {
     if (!confirm(`「${t.title}」を削除しますか？（30日間はゴミ箱から復元可）`)) return;
@@ -2463,7 +2489,7 @@ function renderDetailPanel() {
     const parentCandidates = liveTasks().filter(x => x.id !== t.id && !isDescendantOf(x.id, t.id));
     const renderParentOptions = () => {
       const q = parentSearchEl.value.trim().toLowerCase();
-      const matches = (q ? parentCandidates.filter(x => x.title.toLowerCase().includes(q) || shortId(x.id).includes(q)) : parentCandidates).slice(0, 30);
+      const matches = (q ? parentCandidates.filter(x => matchTaskByNameOrId(x, q)) : parentCandidates).slice(0, 30);
       parentListEl.innerHTML = matches.length
         ? matches.map(x => `<div class="dep-search-item" data-id="${x.id}"><span>${esc(x.title)}${x.projectId ? `<span class="dep-search-proj"> ・ ${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</span><span class="task-id-badge">#${shortId(x.id)}</span></div>`).join("")
         : `<div class="dep-search-empty">該当するタスクがありません</div>`;
@@ -2684,7 +2710,7 @@ function renderDetailPanel() {
     const listEl = $("#tm-dep-add-list");
     const renderOptions = () => {
       const q = searchEl.value.trim().toLowerCase();
-      const matches = (q ? depCandidates.filter(x => x.title.toLowerCase().includes(q) || shortId(x.id).includes(q)) : depCandidates).slice(0, 30);
+      const matches = (q ? depCandidates.filter(x => matchTaskByNameOrId(x, q)) : depCandidates).slice(0, 30);
       if (!matches.length) {
         listEl.innerHTML = `<div class="dep-search-empty">該当するタスクがありません</div>`;
       } else {
@@ -3312,7 +3338,7 @@ function renderGanttView(body, actions, title) {
   const rows = []; // {kind:'proj'|'sec'|'task', proj?, sec?, task?, depth}
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
-    if (t.isHabit) return; // 習慣（定期タスク）はガントに表示しない（実施日を確認する必要がないため。サブツリーごと除外）
+    if (t.hideFromGantt) return; // 「ガント非表示」指定タスクはガントに出さない（サブツリーごと除外）
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     rows.push({ kind: "task", task: t, depth });
     for (const k of state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort)) {
@@ -3352,7 +3378,7 @@ function ganttRowsFor(tasks) {
   const rows = [];
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
-    if (t.isHabit) return; // 習慣（定期タスク）はガントに表示しない（サブツリーごと除外）
+    if (t.hideFromGantt) return; // 「ガント非表示」指定タスクはガントに出さない（サブツリーごと除外）
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
     rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 });
@@ -3635,7 +3661,7 @@ function applyGanttSelection() {
   if (prevBand) prevBand.remove();
   if (!ganttSelectedTaskId) return;
   const row = names.querySelector(`.g-name-row[data-task="${ganttSelectedTaskId}"]`);
-  if (!row) return; // 選択タスクが折りたたみ/習慣/完了非表示などで行に出ていない
+  if (!row) return; // 選択タスクが折りたたみ/ガント非表示/完了非表示などで行に出ていない
   row.classList.add("sel");
   const idx = parseInt(row.dataset.rowIndex, 10);
   const W = parseFloat(svg.dataset.width);
@@ -3863,7 +3889,7 @@ function renderMemos(body, actions) {
       const listEl = editor.querySelector("#memo-task-search-list");
       const renderTaskOptions = () => {
         const q = searchEl.value.trim().toLowerCase();
-        const matches = (q ? taskCandidates.filter(x => x.title.toLowerCase().includes(q) || shortId(x.id).includes(q)) : taskCandidates).slice(0, 30);
+        const matches = (q ? taskCandidates.filter(x => matchTaskByNameOrId(x, q)) : taskCandidates).slice(0, 30);
         listEl.innerHTML = matches.length
           ? matches.map(x => `<div class="dep-search-item" data-id="${x.id}"><span>${esc(x.title)}${x.projectId ? `<span class="dep-search-proj"> ・ ${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</span><span class="task-id-badge">#${shortId(x.id)}</span></div>`).join("")
           : `<div class="dep-search-empty">該当するタスクがありません</div>`;
@@ -4425,7 +4451,7 @@ async function syncNow(statusEl, opts = {}) {
       state.projects = mergeById(state.projects, r.projects, effectiveResetAt);
       state.sections = mergeById(state.sections, r.sections, effectiveResetAt);
       state.tasks = mergeById(state.tasks, r.tasks, effectiveResetAt);
-      state.tasks.forEach(normalizeTask); // 相手から来た不完全なタスクも既定値で補正
+      state.tasks.forEach(normalizeTask); // 相手から来た不完全なタスクの補正＋旧isHabit→hideFromGantt移行
       state.memos = mergeById(state.memos, r.memos, effectiveResetAt);
       state.resetAt = effectiveResetAt;
       // 「今日すること」の並び順も同期する。配列のmergeByIdとは違い単一オブジェクトなので、
@@ -4673,6 +4699,7 @@ state = loadState();
 save();
 document.body.classList.toggle("sidebar-hidden", !!state.settings.sidebarHidden);
 render();
+migrateCalendarOptIn(); // 旧カレンダー予定の掃除（一度だけ・ローカルにデータがある端末用）
 // 同期設定があれば、起動時と5分ごとに自動同期
 if (state.settings.gasUrl) setTimeout(() => syncNow(null, { quiet: true }), 1200);
 setInterval(() => { if (state.settings.gasUrl) syncNow(null, { quiet: true }); }, 300000);
