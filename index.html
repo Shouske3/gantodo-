@@ -644,11 +644,8 @@ function normalizeTask(t) {
   if (!Array.isArray(t.attachments)) t.attachments = [];
   if (t.priority == null) t.priority = "none";
   if (t.waitingOnOther == null) t.waitingOnOther = false;
-  // 旧「習慣」フラグ(isHabit)の移行：ガント非表示の役割だけ引き継ぐ（カレンダー連携は新方式のopt-in=shareToCalendarに委ねる）。
-  if (t.isHabit !== undefined) {
-    if (t.hideFromGantt === undefined) t.hideFromGantt = t.isHabit;
-    delete t.isHabit;
-  }
+  // 廃止したフラグ(旧「習慣」isHabit・その後のhideFromGantt/shareToCalendar)が残っていても無視されるが、掃除しておく。
+  delete t.isHabit; delete t.hideFromGantt; delete t.shareToCalendar;
   return t;
 }
 
@@ -1205,7 +1202,7 @@ function newTask(fields) {
     projectId: null, sectionId: null, parentTaskId: null,
     priority: "none", tags: [], assignee: "", category: "",
     startDate: null, startTime: null, endDate: null, endTime: null, dueDate: null, earliestStartDate: null,
-    blockedBy: [], isMilestone: false, waitingOnOther: false, hideFromGantt: false, shareToCalendar: false, nextAction: null, repeat: null,
+    blockedBy: [], isMilestone: false, waitingOnOther: false, nextAction: null, repeat: null,
     attachments: [], collapsed: false, gcalEventId: null,
     sortOrder: nextTopSortOrder(),
     createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null,
@@ -1219,31 +1216,16 @@ function touch(t) {
   t.updatedAt = nowISO();
   maybeQueueCalendarSync(t);
 }
-// カレンダー連携の対象: **「カレンダーに共有」がONのタスクだけ**（opt-in）。加えて終了日があり、
-// 終了日時刻（時間指定の予定）または開始日（終日の予定）を持つこと。
-// 以前は全タスク自動連携だったが、章介さんの運用で「ほとんどのタスクはカレンダー不要」と判明したため
-// 明示的に共有指定したものだけ連携する方式に変更（2026-08-21）。
+// カレンダー連携の対象: 終了日があり、終了日時刻（時間指定の予定）または開始日（終日の予定）を持つタスク。
+// ＝日程のあるタスクはすべて自動でGoogleカレンダーに反映する（2026-08-23、opt-in方式を廃止し全タスク対象に戻した）。
 // newTask()・TickTickインポートなどtouch()を経由しない新規作成パスからも呼ぶ。
 // 終了日が未来のタスクを完了にした場合は対象外（＝カレンダー予定も削除）にする：
 // 「不要になったタスクを削除せず完了にしてしまう」運用のため、まだ来ていない予定は
 // 実施されない予定として扱う。終了日が今日以前の完了（予定通り実施した記録）は残す。
 function isCalendarEligible(t) {
-  if (t.deletedAt || !t.shareToCalendar || !t.endDate) return false;
+  if (t.deletedAt || !t.endDate) return false;
   if (t.status === "completed" && t.endDate > todayStr()) return false;
   return !!t.endTime || !!t.startDate;
-}
-// 旧方式（全タスク自動連携）→ 新方式（「カレンダーに共有」opt-in）への一度きりの移行掃除。
-// 共有指定していないのにカレンダー予定を持つタスク（gcalEventIdあり）の予定を削除する（章介さんの選択「いったん全部消す」）。
-// gasUrl設定済み・タスク取得済みのときに一度だけ実行し、設定フラグで再実行を防ぐ。同期後にも呼んで、pullで来たデータにも効かせる。
-function migrateCalendarOptIn() {
-  if (!state.settings.gasUrl || state.settings.calendarOptInMigrated || !state.tasks.length) return;
-  const targets = state.tasks.filter(t => t.gcalEventId && !t.shareToCalendar && !t.deletedAt);
-  targets.forEach(t => queueCalendarSync(t.id)); // 不適格＋gcalEventIdあり → syncTaskToCalendarが予定を削除
-  state.settings.calendarOptInMigrated = true;
-  save();
-  if (targets.length && document.getElementById("toasts")) {
-    toast(`カレンダー共有をopt-in方式に変更。共有OFFの${targets.length}件の予定をカレンダーから削除します`, "warn");
-  }
 }
 function maybeQueueCalendarSync(t) {
   if (isCalendarEligible(t) || t.gcalEventId) queueCalendarSync(t.id);
@@ -2289,8 +2271,6 @@ function renderDetailPanel() {
       </div>
       <span class="dp-status">${statusLine}</span>
       <button class="btn small ${t.waitingOnOther ? "primary" : ""}" data-testid="tm-delegate" title="人に任せた（返信待ち）に切り替え/解除">🤝</button>
-      <button class="btn small ${t.shareToCalendar ? "primary" : ""}" data-testid="tm-share-cal" title="Googleカレンダーに共有する/しない（このタスクだけカレンダーに反映）">📅</button>
-      <button class="btn small ${t.hideFromGantt ? "primary" : ""}" data-testid="tm-hide-gantt" title="ガントチャートに表示しない/する">🚫ｶﾞﾝﾄ</button>
       <button class="btn small dp-close-btn" data-testid="tm-close" style="margin-left:auto" title="閉じる（Esc・下にスワイプでも閉じます）">✕</button>
     </div>
     ${(() => {
@@ -2457,8 +2437,6 @@ function renderDetailPanel() {
   }
   $("[data-testid=tm-check]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delegate]").onclick = () => toggleDelegated(t.id);
-  $("[data-testid=tm-share-cal]").onclick = () => apply(() => { t.shareToCalendar = !t.shareToCalendar; });
-  $("[data-testid=tm-hide-gantt]").onclick = () => apply(() => { t.hideFromGantt = !t.hideFromGantt; });
   $("[data-testid=tm-complete]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delete]").onclick = () => {
     if (!confirm(`「${t.title}」を削除しますか？（30日間はゴミ箱から復元可）`)) return;
@@ -3338,7 +3316,6 @@ function renderGanttView(body, actions, title) {
   const rows = []; // {kind:'proj'|'sec'|'task', proj?, sec?, task?, depth}
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
-    if (t.hideFromGantt) return; // 「ガント非表示」指定タスクはガントに出さない（サブツリーごと除外）
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     rows.push({ kind: "task", task: t, depth });
     for (const k of state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort)) {
@@ -3373,12 +3350,32 @@ function renderGanttView(body, actions, title) {
 /* ---- 各ビュー共通: リスト/ガント切替の状態（ビューごと・セッション内） ---- */
 const viewGantt = {};
 
+// あるタスクの全子孫（サブツリー）を再帰的に集める（削除済みは除く）。
+function descendantTasks(id) {
+  const out = [];
+  const walk = pid => {
+    for (const k of state.tasks.filter(x => x.parentTaskId === pid && !x.deletedAt)) { out.push(k); walk(k.id); }
+  };
+  walk(id);
+  return out;
+}
+// 折りたたみ中の親タスクのバー用: 親自身＋全子孫を包含する最大期間を返す（2026-08-23 追加）。
+// 「親タスクの期間」と「子タスクの期間」の最大レンジ＝ start=最も早い開始日, end=最も遅い終了日/納期。
+// 期間を確定できない（開始日または終了日/納期が一つも無い）場合は null。
+function collapsedGanttSpan(t) {
+  const all = [t, ...descendantTasks(t.id)];
+  const starts = all.map(x => x.startDate).filter(Boolean);
+  const ends = [];
+  for (const x of all) { if (x.endDate) ends.push(x.endDate); if (x.dueDate) ends.push(x.dueDate); }
+  if (!starts.length || !ends.length) return null;
+  return { start: starts.reduce((a, b) => (a < b ? a : b)), end: ends.reduce((a, b) => (a > b ? a : b)) };
+}
+
 // 表示中のタスク一覧からガント用の行データを構築（プロジェクト別にグループ化）
 function ganttRowsFor(tasks) {
   const rows = [];
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
-    if (t.hideFromGantt) return; // 「ガント非表示」指定タスクはガントに出さない（サブツリーごと除外）
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
     rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 });
@@ -3439,7 +3436,12 @@ function drawGantt(body, rows) {
   for (const r of rows) {
     if (r.kind !== "task") continue;
     const t = r.task;
-    for (const d of [t.startDate, t.endDate, t.dueDate, t.earliestStartDate]) {
+    const dates = [t.startDate, t.endDate, t.dueDate, t.earliestStartDate];
+    if (r.hasKids && t.ganttCollapsed) { // 折りたたみ中は子行が無いので、包含期間でレンジを広げる
+      const span = collapsedGanttSpan(t);
+      if (span) dates.push(span.start, span.end);
+    }
+    for (const d of dates) {
       if (!d) continue;
       if (d < min) min = d;
       if (d > max) max = d;
@@ -3557,17 +3559,25 @@ function drawGantt(body, rows) {
       const ex = dx(t.earliestStartDate);
       barsHtml += `<line x1="${ex}" y1="${y - 3}" x2="${ex}" y2="${y + G_BAR_H + 3}" stroke="var(--warn)" stroke-width="2" stroke-dasharray="3,2"/>`;
     }
-    if (t.startDate && t.endDate) {
-      const x = dx(t.startDate);
-      const w = Math.max(dw * .6, (diffDays(t.endDate, t.startDate) + 1) * dw);
+    // 折りたたみ中の親タスクは、親＋全子孫を包含する最大期間でバーを描く（サブツリーの期間を集約表示）。
+    const collapsedParent = r.hasKids && t.ganttCollapsed;
+    let barStart = t.startDate, barEnd = t.endDate;
+    if (collapsedParent) {
+      const span = collapsedGanttSpan(t);
+      if (span) { barStart = span.start; barEnd = span.end; }
+    }
+    if (barStart && barEnd) {
+      const x = dx(barStart);
+      const w = Math.max(dw * .6, (diffDays(barEnd, barStart) + 1) * dw);
       const opacity = t.status === "completed" ? .35 : blocked ? .45 : 1;
-      barsHtml += `<g class="gbar" data-task="${t.id}" data-testid="gantt-bar" style="cursor:${blocked ? "not-allowed" : "grab"}">
+      // 折りたたみ集約バーはドラッグ変形の対象外（子の期間を含むため）。展開時のみリサイズハンドルを出す。
+      barsHtml += `<g class="gbar" data-task="${t.id}" data-testid="gantt-bar"${collapsedParent ? ' data-collapsed="1"' : ''} style="cursor:${collapsedParent ? "pointer" : blocked ? "not-allowed" : "grab"}">
         <rect x="${x}" y="${y}" width="${w}" height="${G_BAR_H}" rx="4" fill="${color}" opacity="${opacity * .45}"/>
         <rect x="${x}" y="${y}" width="${w * (t.progress || 0) / 100}" height="${G_BAR_H}" rx="4" fill="${color}" opacity="${opacity}" data-role="progress"/>
-        <rect x="${x}" y="${y}" width="${w}" height="${G_BAR_H}" rx="4" fill="none" stroke="${color}" opacity="${opacity}"/>
+        <rect x="${x}" y="${y}" width="${w}" height="${G_BAR_H}" rx="4" fill="none" stroke="${color}"${collapsedParent ? ' stroke-dasharray="4,2"' : ''} opacity="${opacity}"/>
         ${blocked ? `<text x="${x + w / 2}" y="${y + 13}" text-anchor="middle" font-size="10">🔒</text>` : ""}
-        <rect data-role="handle-l" x="${x - 3}" y="${y}" width="7" height="${G_BAR_H}" fill="transparent" style="cursor:ew-resize"/>
-        <rect data-role="handle-r" x="${x + w - 4}" y="${y}" width="7" height="${G_BAR_H}" fill="transparent" style="cursor:ew-resize"/>
+        ${collapsedParent ? "" : `<rect data-role="handle-l" x="${x - 3}" y="${y}" width="7" height="${G_BAR_H}" fill="transparent" style="cursor:ew-resize"/>
+        <rect data-role="handle-r" x="${x + w - 4}" y="${y}" width="7" height="${G_BAR_H}" fill="transparent" style="cursor:ew-resize"/>`}
       </g>`;
     }
     // マイルストーン（納期の菱形）
@@ -3689,12 +3699,14 @@ function attachGanttDrag(svg, dw, rangeStart) {
         startX: e.clientX,
         origStart: t.startDate, origEnd: t.endDate,
         moved: false, g,
+        collapsed: !!g.dataset.collapsed, // 折りたたみ集約バーはドラッグ変形しない（クリックで開くのみ）
       };
       g.setPointerCapture(e.pointerId);
       e.preventDefault();
     });
     g.addEventListener("pointermove", e => {
       if (!drag || drag.g !== g) return;
+      if (drag.collapsed) return; // 折りたたみ集約バーは変形プレビューしない
       const deltaDays = Math.round((e.clientX - drag.startX) / dw);
       if (Math.abs(e.clientX - drag.startX) > 3) drag.moved = true;
       if (!drag.moved) return;
@@ -4451,7 +4463,7 @@ async function syncNow(statusEl, opts = {}) {
       state.projects = mergeById(state.projects, r.projects, effectiveResetAt);
       state.sections = mergeById(state.sections, r.sections, effectiveResetAt);
       state.tasks = mergeById(state.tasks, r.tasks, effectiveResetAt);
-      state.tasks.forEach(normalizeTask); // 相手から来た不完全なタスクの補正＋旧isHabit→hideFromGantt移行
+      state.tasks.forEach(normalizeTask); // 相手から来た不完全なタスクの補正＋廃止フラグの掃除
       state.memos = mergeById(state.memos, r.memos, effectiveResetAt);
       state.resetAt = effectiveResetAt;
       // 「今日すること」の並び順も同期する。配列のmergeByIdとは違い単一オブジェクトなので、
@@ -4699,7 +4711,6 @@ state = loadState();
 save();
 document.body.classList.toggle("sidebar-hidden", !!state.settings.sidebarHidden);
 render();
-migrateCalendarOptIn(); // 旧カレンダー予定の掃除（一度だけ・ローカルにデータがある端末用）
 // 同期設定があれば、起動時と5分ごとに自動同期
 if (state.settings.gasUrl) setTimeout(() => syncNow(null, { quiet: true }), 1200);
 setInterval(() => { if (state.settings.gasUrl) syncNow(null, { quiet: true }); }, 300000);
