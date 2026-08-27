@@ -547,6 +547,8 @@ svg text { user-select: none; }
   CORE: 状態・永続化・ユーティリティ
 ========================================================*/
 const LS_KEY = "gantodo_v1";
+const LS_SEQ = "gantodo_v1_seq"; // 保存連番（localStorageとIndexedDBのどちらが新しいか判定するため）
+let saveSeq = 0;                 // 保存のたびに増える連番（loadRawStateで採用元を決めるのに使う）
 const PRIO_LABEL = { high: "高", medium: "中", low: "低", none: "なし" };
 const PRIO_COLOR = { high: "var(--prio-high)", medium: "var(--prio-medium)", low: "var(--prio-low)", none: "var(--prio-none)" };
 const PROJ_COLORS = ["#4f9cf9","#57ab5a","#e8b93e","#e5534b","#c678dd","#56b6c2","#e69138","#8ab4f8"];
@@ -592,9 +594,32 @@ function defaultState() {
   };
 }
 
-function loadState() {
+// 状態本体の生JSON文字列を取り出す。IndexedDB(kv)とlocalStorageの両方を見て、
+// seq（保存連番）が大きい方＝「最後に書き込みに成功した保存」を採用する。
+// ・PCで大量データ: localStorageは容量超過で書けず古いまま→seqが進むIndexedDBを採用。
+// ・テストや小規模: localStorageは同期的に確実に書ける→直前の非同期IndexedDB書き込みが未完でも取りこぼさない。
+async function loadRawState() {
+  let idbRec = null;
+  try { idbRec = await kvGetRec("state"); } catch (e) { console.error("kvGetRec(state) failed", e); }
+  let lsData = null, lsSeq = -1;
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    lsData = localStorage.getItem(LS_KEY);
+    const sq = localStorage.getItem(LS_SEQ);
+    lsSeq = sq != null ? Number(sq) : (lsData != null ? 0 : -1); // seqキーが無い旧データはseq=0扱い
+  } catch { /* ignore */ }
+  const idbSeq = (idbRec && idbRec.data != null) ? (typeof idbRec.seq === "number" ? idbRec.seq : 0) : -1;
+  if (idbSeq < 0 && lsData == null) return null; // どちらも無し → デフォルト
+  let chosen, chosenSeq;
+  if (idbSeq >= lsSeq) { chosen = idbRec.data; chosenSeq = idbSeq; }
+  else { chosen = lsData; chosenSeq = lsSeq; }
+  saveSeq = Math.max(0, chosenSeq);
+  try { await kvPut("state", chosen, saveSeq); } catch { /* ignore */ } // IndexedDBを最新に揃えておく（移行）
+  return chosen;
+}
+
+async function loadState() {
+  try {
+    const raw = await loadRawState();
     if (!raw) return defaultState();
     const s = JSON.parse(raw);
     const d = defaultState();
@@ -649,19 +674,32 @@ function normalizeTask(t) {
   return t;
 }
 
+// 保存はIndexedDB(kv)を正とし、localStorageにもベストエフォートで書く（旧データとの互換・テスト用）。
+// localStorageは約5MBで、タスク/メモが増えると容量超過で失敗するが、その場合も黙ってIndexedDBだけに保存する。
+// seq（保存連番）を data の後に書くことで、data書き込みが容量超過で失敗した側はseqも進まず、
+// 読み込み時に「書き込みに成功した最新」を正しく選べる（loadRawState参照）。
+let stateSaveChain = Promise.resolve();
 function save() {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(state));
-    queueSync(); // 同期設定があれば、変更後しばらくして自動同期
-  } catch (e) {
-    toast("保存に失敗しました: " + e.message, "error");
-  }
+  const json = JSON.stringify(state);
+  const seq = ++saveSeq;
+  // localStorageはベストエフォート（容量超過は無視。dataを先に書き、成功したときだけseqを更新）
+  try { localStorage.setItem(LS_KEY, json); localStorage.setItem(LS_SEQ, String(seq)); } catch { /* quota超過等は無視 */ }
+  // IndexedDBへ非同期保存（書き込みは直列化して取りこぼしを防ぐ）
+  stateSaveChain = stateSaveChain.then(() => kvPut("state", json, seq)).catch(e => {
+    console.error("save (idb) failed", e);
+    toast("保存に失敗しました: " + (e && e.message ? e.message : e), "error");
+  });
+  queueSync(); // 同期設定があれば、変更後しばらくして自動同期
 }
 
-// 通常のsave()より厳格な版: 失敗したら直前の状態に巻き戻す（大容量インポート専用）
-function saveOrRevert(beforeJSON) {
+// 通常のsave()より厳格な版: 保存に失敗したら直前の状態に巻き戻す（大容量インポート専用）。
+// IndexedDBに書けたかどうかで判定する（localStorageはベストエフォートなので判定に使わない）。
+async function saveOrRevert(beforeJSON) {
+  const json = JSON.stringify(state);
+  const seq = ++saveSeq;
+  try { localStorage.setItem(LS_KEY, json); localStorage.setItem(LS_SEQ, String(seq)); } catch { /* ignore */ }
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(state));
+    await kvPut("state", json, seq);
     return true;
   } catch (e) {
     try { state = JSON.parse(beforeJSON); } catch { /* 復元不能なら現状維持 */ }
@@ -780,11 +818,32 @@ let idbHandle = null;
 function idbOpen() {
   return new Promise((res, rej) => {
     if (idbHandle) return res(idbHandle);
-    const rq = indexedDB.open("gantodo_files", 1);
-    rq.onupgradeneeded = () => rq.result.createObjectStore("files", { keyPath: "id" });
+    const rq = indexedDB.open("gantodo_files", 2); // v2: 添付(files)に加え、状態本体(kv)ストアを追加
+    rq.onupgradeneeded = () => {
+      const db = rq.result;
+      if (!db.objectStoreNames.contains("files")) db.createObjectStore("files", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("kv")) db.createObjectStore("kv", { keyPath: "id" }); // 状態本体JSON（localStorageの5MB制限を回避）
+    };
     rq.onsuccess = () => { idbHandle = rq.result; res(idbHandle); };
     rq.onerror = () => rej(rq.error);
   });
+}
+// 状態本体などの汎用キー・バリュー（IndexedDBのkvストア。localStorageより桁違いに大きな容量を使える）。
+// seq＝保存の連番。「書き込みに成功した最新の保存」を読み込み時に選ぶために data と一緒に持つ。
+function kvGetRec(key) {
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const rq = db.transaction("kv").objectStore("kv").get(key);
+    rq.onsuccess = () => res(rq.result || null); // {id, data, seq} または null
+    rq.onerror = () => rej(rq.error);
+  }));
+}
+function kvPut(key, data, seq) {
+  return idbOpen().then(db => new Promise((res, rej) => {
+    const tx = db.transaction("kv", "readwrite");
+    tx.objectStore("kv").put({ id: key, data, seq });
+    tx.oncomplete = res;
+    tx.onerror = () => rej(tx.error);
+  }));
 }
 async function fileSave(id, blob) {
   const db = await idbOpen();
@@ -4356,10 +4415,10 @@ function openTickTickImportModal(rows) {
     const cap = getCap();
     closeModal();
     toast("インポート中...お待ちください");
-    setTimeout(() => {
+    setTimeout(async () => {
       const before = JSON.stringify(state);
       const result = importTickTickRows(chosen, { noteCap: cap });
-      const ok = saveOrRevert(before);
+      const ok = await saveOrRevert(before);
       render();
       if (ok) {
         toast(`✅ ${result.created}件のタスクを${result.projects}個のプロジェクトにインポートしました` +
@@ -4707,12 +4766,15 @@ setInterval(() => {
 }, 60000);
 
 /* ---- 起動 ---- */
-state = loadState();
-save();
-document.body.classList.toggle("sidebar-hidden", !!state.settings.sidebarHidden);
-render();
-// 同期設定があれば、起動時と5分ごとに自動同期
-if (state.settings.gasUrl) setTimeout(() => syncNow(null, { quiet: true }), 1200);
+// loadStateはIndexedDB読み込みのため非同期。起動処理を直列に実行する。
+(async function boot() {
+  state = await loadState();
+  save();
+  document.body.classList.toggle("sidebar-hidden", !!state.settings.sidebarHidden);
+  render();
+  // 同期設定があれば、起動時と5分ごとに自動同期
+  if (state.settings.gasUrl) setTimeout(() => syncNow(null, { quiet: true }), 1200);
+})();
 setInterval(() => { if (state.settings.gasUrl) syncNow(null, { quiet: true }); }, 300000);
 
 // タブ/アプリが前面に戻ってきたときにも同期（5分待たずに他端末の変更を拾うため）
