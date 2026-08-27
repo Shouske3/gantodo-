@@ -630,6 +630,8 @@ async function loadState() {
     const limit = addDays(todayStr(), -30);
     s.tasks = s.tasks.filter(t => !t.deletedAt || t.deletedAt.slice(0, 10) >= limit);
     s.memos = s.memos.filter(m => !m.deletedAt || m.deletedAt.slice(0, 10) >= limit);
+    // 完了して90日以上たったタスクは自動アーカイブ（一覧から片付けつつ、検索では残す）
+    autoArchiveOldCompleted(s.tasks);
     // サブタスクのプロジェクトを最上位の親に揃える（過去データの補正）
     fixSubtaskProjects(s.tasks);
     for (const t of s.tasks) normalizeTask(t); // 壊れた/不完全なタスクを既定値で補正
@@ -798,8 +800,32 @@ function clearTimePicker(idBase) {
 function getTask(id) { return state.tasks.find(t => t.id === id); }
 function getProject(id) { return state.projects.find(p => p.id === id); }
 function getSection(id) { return state.sections.find(s => s.id === id); }
-function liveTasks() { return state.tasks.filter(t => !t.deletedAt); }
+// 通常の表示対象タスク＝削除済みでもアーカイブ済みでもないもの。
+// アーカイブ＝完了して90日以上たった等で「片付いた」タスク。一覧・今日すること・ガント・ダッシュボード等から外れるが、
+// 検索では見つかる（searchableTasks）。データ本体はstate.tasksに残るので同期もされる。
+function liveTasks() { return state.tasks.filter(t => !t.deletedAt && !t.archivedAt); }
 function activeTasks() { return liveTasks().filter(t => t.status === "active"); }
+// 削除済みだけを除いたタスク（アーカイブ済みは含む）。検索・添付同期など「アーカイブも対象に含めたい」用途で使う。
+function nonDeletedTasks() { return state.tasks.filter(t => !t.deletedAt); }
+const ARCHIVE_AFTER_DAYS = 90; // 完了からこの日数がたった完了タスクを自動アーカイブ
+// 完了して ARCHIVE_AFTER_DAYS 日以上たった（＝完了日が今日-90日以前の）タスクに archivedAt を付ける。
+// 読み込み時に実行。既にアーカイブ済み・完了日不明・削除済みは対象外。updatedAtは変えない（同期の余計な競合回避）。
+function autoArchiveOldCompleted(tasks) {
+  const cutoff = addDays(todayStr(), -ARCHIVE_AFTER_DAYS);
+  for (const t of tasks) {
+    if (t.archivedAt || t.deletedAt || t.status !== "completed" || !t.completedAt) continue;
+    if (localDateOf(t.completedAt) <= cutoff) t.archivedAt = nowISO();
+  }
+}
+function isArchived(t) { return !!(t && t.archivedAt); }
+// タスクのアーカイブ状態を切り替える（手動アーカイブ/解除）。
+function toggleTaskArchive(id) {
+  const t = getTask(id);
+  if (!t) return;
+  t.archivedAt = t.archivedAt ? null : nowISO();
+  touch(t);
+  commit();
+}
 // 削除済み(status:"deleted")・アーカイブ済みを除いた、表示対象のプロジェクト一覧
 function visibleProjects() { return state.projects.filter(p => p.status !== "archived" && p.status !== "deleted"); }
 
@@ -907,7 +933,7 @@ function base64ToBlob(b64, mime) {
 // 返り値 files=送る本体（新規のみ）／fileIds=サーバーに保持させる全id／skipped=容量超過で今回見送った件数。
 async function collectAttachmentFilesForSync(alreadyOnServer) {
   const metas = [];
-  for (const t of liveTasks()) for (const a of t.attachments || []) metas.push(a);
+  for (const t of nonDeletedTasks()) for (const a of t.attachments || []) metas.push(a); // アーカイブ済みも添付を保持し続ける
   metas.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   const files = [], fileIds = [];
   let total = 0, skipped = 0;
@@ -1264,7 +1290,7 @@ function newTask(fields) {
     blockedBy: [], isMilestone: false, waitingOnOther: false, nextAction: null, repeat: null,
     attachments: [], collapsed: false, gcalEventId: null,
     sortOrder: nextTopSortOrder(),
-    createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null,
+    createdAt: nowISO(), updatedAt: nowISO(), completedAt: null, deletedAt: null, archivedAt: null,
     ...fields,
   };
   state.tasks.push(t);
@@ -1754,7 +1780,7 @@ function renderSidebar() {
   // その他
   const misc = document.getElementById("nav-misc");
   const miscItems = [
-    { key: "memos", icon: "📝", label: "メモ", v: { type: "memos" }, cnt: state.memos.filter(m => !m.deletedAt).length || null },
+    { key: "memos", icon: "📝", label: "メモ", v: { type: "memos" }, cnt: state.memos.filter(m => !m.deletedAt && !m.archivedAt).length || null },
     { key: "trash", icon: "🗑", label: "ゴミ箱", v: { type: "trash" }, cnt: c.trash || null },
     { key: "settings", icon: "⚙️", label: "設定・データ", v: { type: "settings" }, cnt: null },
   ];
@@ -1848,6 +1874,7 @@ function taskRowEl(t, opts = {}) {
 
   const badges = [];
   const today = todayStr();
+  if (isArchived(t)) badges.push(`<span class="badge">🗄️ アーカイブ済み</span>`); // 検索結果にのみ出現（通常表示からは除外）
   if (t.dueDate) {
     const od = t.status === "active" && t.dueDate < today;
     badges.push(`<span class="badge ${od ? "overdue" : "due"}">${t.isMilestone ? "◆" : "納期"} ${fmtDispW(t.dueDate)}${od ? " 超過" + diffDays(today, t.dueDate) + "日" : ""}</span>`);
@@ -2201,7 +2228,8 @@ function taskMatchesAllTerms(terms, t, hayFull, hayShort) {
 function renderSearch(body) {
   const terms = parseQuery(view.q || "");
   if (!terms.length) { body.innerHTML = `<div class="empty-msg">検索語を入力してください</div>`; return; }
-  const tasks = liveTasks().filter(t => taskMatchesAllTerms(terms, t,
+  // 検索はアーカイブ済みタスクも対象にする（片付けたタスクも後から見つけられるように）
+  const tasks = nonDeletedTasks().filter(t => taskMatchesAllTerms(terms, t,
     normalizeSearch(t.title + " " + (t.note || "") + " " + (t.tags || []).join(" ")),
     normalizeSearch(t.title + " " + (t.tags || []).join(" "))));
   const memos = state.memos.filter(m => !m.deletedAt && matchesAllTerms(terms,
@@ -2225,7 +2253,7 @@ function renderSearch(body) {
     for (const m of memos) {
       const el = document.createElement("div");
       el.className = "task-row";
-      el.innerHTML = `<div class="t-main"><div class="t-title">📝 ${esc(m.title)}</div></div>`;
+      el.innerHTML = `<div class="t-main"><div class="t-title">📝 ${esc(m.title)}${m.archivedAt ? ` <span class="badge">🗄️ アーカイブ済み</span>` : ""}</div></div>`;
       el.onclick = () => { editingMemoId = m.id; setView({ type: "memos" }); };
       body.appendChild(el);
     }
@@ -2351,6 +2379,11 @@ function renderDetailPanel() {
     })()}
     <input id="tm-title" data-testid="tm-title" class="dp-title" value="${esc(t.title)}" placeholder="タイトル">
     <div class="task-id-badge" data-testid="tm-id" style="margin:2px 0 6px" title="同名タスクを区別するための内部ID">#${shortId(t.id)}</div>
+    <div style="margin:2px 0 6px">
+      ${isArchived(t)
+        ? `<span class="badge">🗄️ アーカイブ済み（一覧非表示・検索対象）</span> <button class="btn small" data-testid="tm-archive-toggle" title="アーカイブを解除して一覧に戻す">🗄️ 解除</button>`
+        : `<button class="btn small" data-testid="tm-archive-toggle" title="一覧から片付ける（検索では見つかる。完了から90日で自動アーカイブ）">🗄️ アーカイブ</button>`}
+    </div>
     ${linkedMemos.length ? `<div data-testid="tm-linked-memos" style="margin:2px 0 6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
       <span style="font-size:11px;color:var(--text-dim)">📝 関連メモ:</span>
       ${linkedMemos.map(m => `<span class="badge linklike" data-testid="tm-memo-link" data-memo="${m.id}" title="このメモを開く">${esc(m.title)}</span>`).join("")}
@@ -2496,6 +2529,7 @@ function renderDetailPanel() {
   }
   $("[data-testid=tm-check]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delegate]").onclick = () => toggleDelegated(t.id);
+  $("[data-testid=tm-archive-toggle]").onclick = () => { const wasArchived = isArchived(t); toggleTaskArchive(t.id); if (!wasArchived) closeDetail(); };
   $("[data-testid=tm-complete]").onclick = () => toggleComplete(t.id);
   $("[data-testid=tm-delete]").onclick = () => {
     if (!confirm(`「${t.title}」を削除しますか？（30日間はゴミ箱から復元可）`)) return;
@@ -3898,7 +3932,8 @@ function renderMemos(body, actions) {
     commit();
   };
 
-  const memos = state.memos.filter(m => !m.deletedAt).sort((a, b) => b.updatedAt < a.updatedAt ? -1 : 1);
+  // 一覧はアーカイブ済みメモを除く（検索では見つかる）。編集中のメモがアーカイブ済みなら、そのメモだけは一覧にも残して操作できるようにする。
+  const memos = state.memos.filter(m => !m.deletedAt && (!m.archivedAt || m.id === editingMemoId)).sort((a, b) => b.updatedAt < a.updatedAt ? -1 : 1);
   const layout = document.createElement("div");
   layout.id = "memo-layout";
 
@@ -3931,8 +3966,10 @@ function renderMemos(body, actions) {
         <input id="memo-title" data-testid="memo-title" value="${esc(memo.title)}" style="flex:1;min-width:150px;font-weight:700">
         <button class="btn small ${memoPreview ? "" : "primary"}" data-testid="memo-edit-btn">編集</button>
         <button class="btn small ${memoPreview ? "primary" : ""}" data-testid="memo-preview-btn">プレビュー</button>
+        <button class="btn small ${memo.archivedAt ? "primary" : ""}" data-testid="memo-archive-btn" title="${memo.archivedAt ? "アーカイブを解除して一覧に戻す" : "一覧から片付ける（検索では見つかる）"}">${memo.archivedAt ? "🗄️ 解除" : "🗄️ アーカイブ"}</button>
         <button class="btn small danger" data-testid="memo-delete-btn">削除</button>
       </div>
+      ${memo.archivedAt ? `<div class="badge" style="align-self:flex-start">🗄️ このメモはアーカイブ済み（一覧非表示・検索対象）</div>` : ""}
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
         <select id="memo-proj" data-testid="memo-proj" style="flex:1;min-width:140px">${projOpts}</select>
         <div style="flex:1;min-width:140px">
@@ -3978,6 +4015,11 @@ function renderMemos(body, actions) {
       const ta = editor.querySelector("#memo-body");
       if (ta) { memo.body = ta.value; memo.updatedAt = nowISO(); save(); }
       memoPreview = true; render();
+    };
+    editor.querySelector("[data-testid=memo-archive-btn]").onclick = () => {
+      memo.archivedAt = memo.archivedAt ? null : nowISO();
+      memo.updatedAt = nowISO();
+      commit();
     };
     editor.querySelector("[data-testid=memo-delete-btn]").onclick = () => {
       if (!confirm(`メモ「${memo.title}」を削除しますか？`)) return;
