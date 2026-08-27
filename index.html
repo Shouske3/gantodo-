@@ -250,6 +250,15 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .g-name-row.sel { background: var(--accent-dim); box-shadow: inset 3px 0 0 var(--accent); }
 rect.g-sel-row { fill: var(--accent); opacity: .14; pointer-events: none; }
 .g-name-row .nm { overflow: hidden; text-overflow: ellipsis; }
+/* ガントの親タスク折りたたみ三角: 大きめ＆押しやすいタップ領域にする */
+.g-tri {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 5px; font-size: 12px; line-height: 1;
+  color: var(--text-dim); background: var(--bg3); cursor: pointer; user-select: none;
+}
+.g-tri:hover { background: var(--accent-dim); color: var(--accent); }
+.g-tri.on { background: var(--accent); color: #fff; } /* 折りたたみ中は目立たせる */
+.g-tri-sp { flex: none; width: 22px; } /* 子なしタスクの整列用スペーサー */
 .g-hdr-row { height: 34px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; color: var(--text-faint); font-weight: 700; border-bottom: 1px solid var(--bg3); }
 svg text { user-select: none; }
 
@@ -3565,7 +3574,9 @@ function drawGantt(body, rows) {
     if (r.kind === "sec") return `<div class="g-name-row head" data-sec="${r.sec.id}"><span class="tri" style="font-size:9px">${r.sec.collapsed ? "▶" : "▼"}</span><span class="nm">${esc(r.sec.name)}</span></div>`;
     const t = r.task;
     const mark = t.status === "completed" ? "✓ " : isBlocked(t) ? "🔒" : isWaiting(t) ? "⏳" : "";
-    const tri = r.hasKids ? `<span class="tri" data-gtoggle="${t.id}" style="font-size:9px;cursor:pointer">${t.ganttCollapsed ? "▶" : "▼"}</span>` : "";
+    const tri = r.hasKids
+      ? `<span class="g-tri ${t.ganttCollapsed ? "on" : ""}" data-gtoggle="${t.id}" data-testid="gantt-fold" title="${t.ganttCollapsed ? "サブタスクを開く" : "サブタスクを折りたたむ（親バーが親＋子の最大期間になります）"}">${t.ganttCollapsed ? "▶" : "▼"}</span>`
+      : `<span class="g-tri-sp"></span>`;
     return `<div class="g-name-row" data-task="${t.id}" data-row-index="${i}" data-testid="gantt-name" style="padding-left:${8 + r.depth * 14}px">
       ${tri}<span class="nm" style="${t.status === "completed" ? "text-decoration:line-through;color:var(--text-faint)" : ""}">${mark}${esc(t.title)}</span></div>`;
   }).join("");
