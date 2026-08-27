@@ -3417,10 +3417,10 @@ function renderGanttView(body, actions, title) {
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
   const pushTree = (t, depth) => {
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
-    rows.push({ kind: "task", task: t, depth });
-    for (const k of state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort)) {
-      if (depth < 5) pushTree(k, depth + 1);
-    }
+    const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
+    rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 }); // hasKids→親タスクに折りたたみ三角が出る
+    if (t.ganttCollapsed) return; // 折りたたみ中はサブツリーを出さない（バーは親＋子の最大期間で表示＝drawGantt側）
+    if (depth < 5) for (const k of kids) pushTree(k, depth + 1);
   };
   if (isAll) {
     // プロジェクトごとにグループ化。プロジェクトなし（Inbox）は日付付きタスクのみ表示
