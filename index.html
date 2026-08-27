@@ -3401,7 +3401,8 @@ function renderGanttView(body, actions, title) {
     <div class="btn-group" style="margin-left:8px">
       ${["day", "week", "month"].map(z => `<button class="btn small ${ganttZoom === z ? "on" : ""}" data-zoom="${z}" data-testid="zoom-${z}">${{ day: "日", week: "週", month: "月" }[z]}</button>`).join("")}
     </div>
-    <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>`;
+    <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>
+    ${ganttFoldAllBtnHtml()}`;
   if (!isAll) actions.querySelector("[data-testid=view-list-btn]").onclick = () => setView({ type: "project", id: p.id });
   actions.querySelectorAll("[data-zoom]").forEach(b => {
     b.onclick = () => { ganttZoom = b.dataset.zoom; ganttScrollMemo = null; render(); };
@@ -3411,6 +3412,7 @@ function renderGanttView(body, actions, title) {
     save();
     render();
   };
+  bindGanttFoldAll(actions);
 
   // ---- 行を構築（プロジェクト/セクション見出し + タスク + サブタスク） ----
   const rows = []; // {kind:'proj'|'sec'|'task', proj?, sec?, task?, depth}
@@ -3471,6 +3473,31 @@ function collapsedGanttSpan(t) {
   return { start: starts.reduce((a, b) => (a < b ? a : b)), end: ends.reduce((a, b) => (a > b ? a : b)) };
 }
 
+// 子を持つ（表示対象の）親タスクのid一覧。ガントの「すべて開く/閉じる」用。
+function ganttParentTaskIds() {
+  const parentIds = new Set();
+  for (const t of state.tasks) if (t.parentTaskId && !t.deletedAt) parentIds.add(t.parentTaskId);
+  return state.tasks.filter(t => !t.deletedAt && !t.archivedAt && parentIds.has(t.id)).map(t => t.id);
+}
+// 子を持つ親タスクが1つでも開いているか（＝次の一括操作は「すべて閉じる」にすべき状態）。
+function anyGanttParentExpanded() {
+  return ganttParentTaskIds().some(id => { const t = getTask(id); return t && !t.ganttCollapsed; });
+}
+// 子を持つ親タスクをまとめて開く/閉じる。ganttCollapsedはローカル表示状態なのでtouchは呼ばない（同期対象外）。
+function setAllGanttParentsCollapsed(collapsed) {
+  for (const id of ganttParentTaskIds()) { const t = getTask(id); if (t) t.ganttCollapsed = collapsed; }
+  commit();
+}
+// ガント操作バー用「すべて開く/すべて閉じる」ボタンのHTML（両ガント経路で共用）。
+function ganttFoldAllBtnHtml() {
+  const anyOpen = anyGanttParentExpanded();
+  return `<button class="btn small" data-testid="gantt-fold-all" style="margin-left:8px" title="子を持つタスクをまとめて開く/閉じる">${anyOpen ? "すべて閉じる" : "すべて開く"}</button>`;
+}
+function bindGanttFoldAll(actions) {
+  const btn = actions.querySelector("[data-testid=gantt-fold-all]");
+  if (btn) btn.onclick = () => setAllGanttParentsCollapsed(anyGanttParentExpanded());
+}
+
 // 表示中のタスク一覧からガント用の行データを構築（プロジェクト別にグループ化）
 function ganttRowsFor(tasks) {
   const rows = [];
@@ -3508,13 +3535,15 @@ function ganttToggle(actions, key, extraHtml) {
       ? `<div class="btn-group" style="margin-left:8px">
           ${["day", "week", "month"].map(z => `<button class="btn small ${ganttZoom === z ? "on" : ""}" data-zoom="${z}" data-testid="zoom-${z}">${{ day: "日", week: "週", month: "月" }[z]}</button>`).join("")}
         </div>
-        <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>`
+        <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>
+        ${ganttFoldAllBtnHtml()}`
       : (extraHtml || "")}`;
   actions.querySelector("[data-testid=mode-list]").onclick = () => { viewGantt[key] = false; ganttScrollMemo = null; render(); };
   actions.querySelector("[data-testid=mode-gantt]").onclick = () => { viewGantt[key] = true; ganttScrollMemo = null; render(); };
   actions.querySelectorAll("[data-zoom]").forEach(b => {
     b.onclick = () => { ganttZoom = b.dataset.zoom; ganttScrollMemo = null; render(); };
   });
+  bindGanttFoldAll(actions);
   const hideDoneBtn = actions.querySelector("[data-testid=gantt-hide-done]");
   if (hideDoneBtn) hideDoneBtn.onclick = () => {
     state.settings.ganttHideDone = !state.settings.ganttHideDone;
