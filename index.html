@@ -390,7 +390,8 @@ svg text { user-select: none; }
   display: flex; gap: 6px; align-items: center;
   margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border);
 }
-.dp-proj { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-foot .btn.small { flex: none; } /* ボタンは縮めない（完了/アーカイブ/削除/⋯を1行に保つ） */
+.dp-proj { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex-shrink: 1; }
 /* メモ欄: 初期高さ=画面の1/3、内容に応じて拡張 */
 #tm-note, #tm-note-view { min-height: 33vh; width: 100%; }
 #tm-note { resize: vertical; overflow: hidden; line-height: 1.6; }
@@ -2379,11 +2380,7 @@ function renderDetailPanel() {
     })()}
     <input id="tm-title" data-testid="tm-title" class="dp-title" value="${esc(t.title)}" placeholder="タイトル">
     <div class="task-id-badge" data-testid="tm-id" style="margin:2px 0 6px" title="同名タスクを区別するための内部ID">#${shortId(t.id)}</div>
-    <div style="margin:2px 0 6px">
-      ${isArchived(t)
-        ? `<span class="badge">🗄️ アーカイブ済み（一覧非表示・検索対象）</span> <button class="btn small" data-testid="tm-archive-toggle" title="アーカイブを解除して一覧に戻す">🗄️ 解除</button>`
-        : `<button class="btn small" data-testid="tm-archive-toggle" title="一覧から片付ける（検索では見つかる。完了から90日で自動アーカイブ）">🗄️ アーカイブ</button>`}
-    </div>
+    ${isArchived(t) ? `<div style="margin:2px 0 6px"><span class="badge">🗄️ アーカイブ済み（一覧非表示・検索対象）</span></div>` : ""}
     ${linkedMemos.length ? `<div data-testid="tm-linked-memos" style="margin:2px 0 6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
       <span style="font-size:11px;color:var(--text-dim)">📝 関連メモ:</span>
       ${linkedMemos.map(m => `<span class="badge linklike" data-testid="tm-memo-link" data-memo="${m.id}" title="このメモを開く">${esc(m.title)}</span>`).join("")}
@@ -2506,6 +2503,7 @@ function renderDetailPanel() {
         : "📥 受信トレイ"}</span>
       <span style="flex:1"></span>
       <button class="btn small ${done ? "" : "primary"}" data-testid="tm-complete">${done ? "↩ 戻す" : "✓ 完了"}</button>
+      <button class="btn small ${isArchived(t) ? "primary" : ""}" data-testid="tm-archive-toggle" title="${isArchived(t) ? "アーカイブを解除して一覧に戻す" : "一覧から片付ける（検索では見つかる。完了から90日で自動アーカイブ）"}">${isArchived(t) ? "🗄️ 解除" : "🗄️ アーカイブ"}</button>
       <button class="btn small danger" data-testid="tm-delete">削除</button>
       <button class="btn small ${detailExpanded ? "primary" : ""}" data-testid="tm-more" title="詳細設定（プロジェクト・日付・依存など）を${detailExpanded ? "隠す" : "表示"}">⋯</button>
     </div>`;
