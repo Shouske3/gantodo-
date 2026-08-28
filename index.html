@@ -645,6 +645,7 @@ async function loadState() {
     // サブタスクのプロジェクトを最上位の親に揃える（過去データの補正）
     fixSubtaskProjects(s.tasks);
     for (const t of s.tasks) normalizeTask(t); // 壊れた/不完全なタスクを既定値で補正
+    for (const m of s.memos) normalizeMemo(m); // 壊れた/不完全なメモを補正（updatedAt欠落で真っ白になるのを防ぐ）
     return s;
   } catch (e) {
     console.error("loadState failed", e);
@@ -684,6 +685,18 @@ function normalizeTask(t) {
   // 廃止したフラグ(旧「習慣」isHabit・その後のhideFromGantt/shareToCalendar)が残っていても無視されるが、掃除しておく。
   delete t.isHabit; delete t.hideFromGantt; delete t.shareToCalendar;
   return t;
+}
+
+// 壊れた/不完全なメモの必須フィールドを既定値で補う（読み込み時・同期後に適用）。
+// 特にupdatedAt欠落は memo.updatedAt.slice(...) 等で例外→メモ画面が真っ白になるため必ず補う（同期/インポート/旧データ由来で発生し得る）。
+function normalizeMemo(m) {
+  if (!m) return m;
+  if (typeof m.title !== "string") m.title = m.title == null ? "無題のメモ" : String(m.title);
+  if (typeof m.body !== "string") m.body = m.body == null ? "" : String(m.body);
+  if (!Array.isArray(m.tags)) m.tags = [];
+  if (!m.createdAt) m.createdAt = m.updatedAt || nowISO();
+  if (!m.updatedAt) m.updatedAt = m.createdAt; // 欠落補完（同期競合を避けるため既存値がある場合は変えない）
+  return m;
 }
 
 // 保存はIndexedDB(kv)を正とし、localStorageにもベストエフォートで書く（旧データとの互換・テスト用）。
@@ -3970,8 +3983,9 @@ function renderMemos(body, actions) {
     commit();
   };
 
+  state.memos.forEach(normalizeMemo); // 不完全なメモ（updatedAt欠落など）を補正してから描画（真っ白防止）
   // 一覧はアーカイブ済みメモを除く（検索では見つかる）。編集中のメモがアーカイブ済みなら、そのメモだけは一覧にも残して操作できるようにする。
-  const memos = state.memos.filter(m => !m.deletedAt && (!m.archivedAt || m.id === editingMemoId)).sort((a, b) => b.updatedAt < a.updatedAt ? -1 : 1);
+  const memos = state.memos.filter(m => !m.deletedAt && (!m.archivedAt || m.id === editingMemoId)).sort((a, b) => (b.updatedAt || "") < (a.updatedAt || "") ? -1 : 1);
   const layout = document.createElement("div");
   layout.id = "memo-layout";
 
@@ -3984,7 +3998,7 @@ function renderMemos(body, actions) {
     el.setAttribute("data-testid", "memo-item");
     const linked = memo.taskId ? getTask(memo.taskId)?.title : memo.projectId ? getProject(memo.projectId)?.name : null;
     el.innerHTML = `<div class="m-title">${esc(memo.title)}</div>
-      <div class="m-date">${memo.updatedAt.slice(0, 10)}${linked ? " · 🔗" + esc(linked) : ""}</div>`;
+      <div class="m-date">${(memo.updatedAt || memo.createdAt || "").slice(0, 10)}${linked ? " · 🔗" + esc(linked) : ""}</div>`;
     el.onclick = () => { editingMemoId = memo.id; render(); };
     list.appendChild(el);
   }
@@ -4604,6 +4618,7 @@ async function syncNow(statusEl, opts = {}) {
       state.tasks = mergeById(state.tasks, r.tasks, effectiveResetAt);
       state.tasks.forEach(normalizeTask); // 相手から来た不完全なタスクの補正＋廃止フラグの掃除
       state.memos = mergeById(state.memos, r.memos, effectiveResetAt);
+      state.memos.forEach(normalizeMemo); // 相手から来た不完全なメモ（updatedAt欠落等）を補正
       state.resetAt = effectiveResetAt;
       // 「今日すること」の並び順も同期する。配列のmergeByIdとは違い単一オブジェクトなので、
       // 「同じ日付（date）」かつ「相手が実際にカスタマイズ済み」の場合だけ、
