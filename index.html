@@ -645,6 +645,7 @@ async function loadState() {
     // サブタスクのプロジェクトを最上位の親に揃える（過去データの補正）
     fixSubtaskProjects(s.tasks);
     for (const t of s.tasks) normalizeTask(t); // 壊れた/不完全なタスクを既定値で補正
+    s.memos = s.memos.filter(m => !isMisplacedFileObject(m)); // メモに紛れ込んだ添付ファイル実体を除去（同期肥大化・iPhone失敗の原因）
     for (const m of s.memos) normalizeMemo(m); // 壊れた/不完全なメモを補正（updatedAt欠落で真っ白になるのを防ぐ）
     return s;
   } catch (e) {
@@ -685,6 +686,19 @@ function normalizeTask(t) {
   // 廃止したフラグ(旧「習慣」isHabit・その後のhideFromGantt/shareToCalendar)が残っていても無視されるが、掃除しておく。
   delete t.isHabit; delete t.hideFromGantt; delete t.shareToCalendar;
   return t;
+}
+
+// 添付ファイルの実体(mime+data=base64本体)がメモ配列に紛れ込んだ壊れデータを判定する。
+// 過去の不具合で添付本体がstate.memosに二重保存され、pullが十数MBに膨れてiPhoneのJSON解析が失敗＝同期不能になっていた。
+// 実体は正規のfilesストア（IndexedDB＋同期のfiles）に別途あるので、メモ側の重複は破棄して安全。
+function isMisplacedFileObject(m) {
+  return !!(m && m.mime !== undefined && typeof m.data === "string");
+}
+// メモ配列から紛れ込んだ添付ファイル実体を除去する（読み込み時・同期後に適用）。除去した件数を返す。
+function stripMisplacedFilesFromMemos() {
+  const before = state.memos.length;
+  state.memos = state.memos.filter(m => !isMisplacedFileObject(m));
+  return before - state.memos.length;
 }
 
 // 壊れた/不完全なメモの必須フィールドを既定値で補う（読み込み時・同期後に適用）。
@@ -4618,6 +4632,7 @@ async function syncNow(statusEl, opts = {}) {
       state.tasks = mergeById(state.tasks, r.tasks, effectiveResetAt);
       state.tasks.forEach(normalizeTask); // 相手から来た不完全なタスクの補正＋廃止フラグの掃除
       state.memos = mergeById(state.memos, r.memos, effectiveResetAt);
+      state.memos = state.memos.filter(m => !isMisplacedFileObject(m)); // 相手/サーバーから来た「メモに紛れ込んだ添付実体」を除去（次のpushでサーバーもクリーンになる）
       state.memos.forEach(normalizeMemo); // 相手から来た不完全なメモ（updatedAt欠落等）を補正
       state.resetAt = effectiveResetAt;
       // 「今日すること」の並び順も同期する。配列のmergeByIdとは違い単一オブジェクトなので、
