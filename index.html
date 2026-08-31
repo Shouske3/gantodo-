@@ -972,17 +972,22 @@ async function collectAttachmentFilesForSync(alreadyOnServer) {
   const metas = [];
   for (const t of nonDeletedTasks()) for (const a of t.attachments || []) metas.push(a); // アーカイブ済みも添付を保持し続ける
   metas.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-  const files = [], fileIds = [];
+  const files = [], fileIds = [], seen = new Set();
   let total = 0, skipped = 0;
   for (const a of metas) {
-    if (alreadyOnServer && alreadyOnServer.has(a.id)) { fileIds.push(a.id); continue; } // 本体はサーバー保持済み→再送しない
-    if (total + (a.size || 0) * 1.37 > ATTACHMENT_SYNC_CAP_BYTES) { skipped++; continue; }
+    if (seen.has(a.id)) continue;
+    seen.add(a.id);
+    // ★参照されている添付idは、手元に本体が無くても必ず「保持対象(fileIds)」に入れる。
+    // これを条件付きにしていたため、本体を持たない端末がpushするとサーバーが参照中の添付を削除してしまい、
+    // 別端末の画像が消える不具合があった（2026-08-27）。以後はidは常に保持し、本体は送れる分だけ送る。
+    fileIds.push(a.id);
+    if (alreadyOnServer && alreadyOnServer.has(a.id)) continue; // 本体はサーバーにある→再送不要
+    if (total + (a.size || 0) * 1.37 > ATTACHMENT_SYNC_CAP_BYTES) { skipped++; continue; } // 今回は容量超過で本体未送（idは保持済みなので次回送る）
     try {
       const blob = await fileGet(a.id);
-      if (!blob) continue;
+      if (!blob) continue; // 本体が手元に無い→今回は送れない（本体を持つ端末が送る。idは保持済みなのでサーバーから消えない）
       const data = await blobToBase64(blob);
       files.push({ id: a.id, mime: blob.type, data, createdAt: a.createdAt || nowISO() });
-      fileIds.push(a.id);
       total += data.length;
     } catch { skipped++; }
   }
