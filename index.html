@@ -3433,7 +3433,7 @@ function renderGanttView(body, actions, title) {
     <div class="btn-group" style="margin-left:8px">
       ${["day", "week", "month"].map(z => `<button class="btn small ${ganttZoom === z ? "on" : ""}" data-zoom="${z}" data-testid="zoom-${z}">${{ day: "日", week: "週", month: "月" }[z]}</button>`).join("")}
     </div>
-    <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>
+    <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了したタスクと日程が未設定のタスクを隠す">完了・日程なしを隠す</button>
     ${ganttFoldAllBtnHtml()}`;
   if (!isAll) actions.querySelector("[data-testid=view-list-btn]").onclick = () => setView({ type: "project", id: p.id });
   actions.querySelectorAll("[data-zoom]").forEach(b => {
@@ -3449,8 +3449,10 @@ function renderGanttView(body, actions, title) {
   // ---- 行を構築（プロジェクト/セクション見出し + タスク + サブタスク） ----
   const rows = []; // {kind:'proj'|'sec'|'task', proj?, sec?, task?, depth}
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
+  const keepSched = state.settings.ganttHideDone ? ganttScheduleKeepSet() : null; // 「完了・日程なしを隠す」ON時の残す集合
   const pushTree = (t, depth) => {
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
+    if (keepSched && !keepSched.has(t.id)) return; // 日程が無く、日程を持つ子孫も無い → 隠す（サブツリーごと）
     const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
     rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 }); // hasKids→親タスクに折りたたみ三角が出る
     if (t.ganttCollapsed) return; // 折りたたみ中はサブツリーを出さない（バーは親＋子の最大期間で表示＝drawGantt側）
@@ -3534,8 +3536,10 @@ function bindGanttFoldAll(actions) {
 function ganttRowsFor(tasks) {
   const rows = [];
   const bySort = (a, b) => a.sortOrder - b.sortOrder;
+  const keepSched = state.settings.ganttHideDone ? ganttScheduleKeepSet() : null; // 「完了・日程なしを隠す」ON時の残す集合
   const pushTree = (t, depth) => {
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
+    if (keepSched && !keepSched.has(t.id)) return; // 日程が無く、日程を持つ子孫も無い → 隠す（サブツリーごと）
     const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
     rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 });
     if (t.ganttCollapsed) return; // 親タスクで折りたたみ中は子（サブツリー）を出さない
@@ -3567,7 +3571,7 @@ function ganttToggle(actions, key, extraHtml) {
       ? `<div class="btn-group" style="margin-left:8px">
           ${["day", "week", "month"].map(z => `<button class="btn small ${ganttZoom === z ? "on" : ""}" data-zoom="${z}" data-testid="zoom-${z}">${{ day: "日", week: "週", month: "月" }[z]}</button>`).join("")}
         </div>
-        <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了タスクの表示/非表示">完了を隠す</button>
+        <button class="btn small ${state.settings.ganttHideDone ? "on" : ""}" data-testid="gantt-hide-done" style="margin-left:8px" title="完了したタスクと日程が未設定のタスクを隠す">完了・日程なしを隠す</button>
         ${ganttFoldAllBtnHtml()}`
       : (extraHtml || "")}`;
   actions.querySelector("[data-testid=mode-list]").onclick = () => { viewGantt[key] = false; ganttScrollMemo = null; render(); };
@@ -3586,6 +3590,47 @@ function ganttToggle(actions, key, extraHtml) {
 }
 
 // 行データからガントチャートを描画（全ビュー共通エンジン）
+// 繰り返しタスクの「未来の回」をガントに投影表示するための計算。
+// 今日から一定期間先まで（GANTT_REPEAT_HORIZON_DAYS）、最大GANTT_REPEAT_MAX_OCC回まで、
+// rollTaskForwardと同じロジック（アンカー=納期||開始日、次回はnextRepeatDate、全日付をdelta分ずらす）で投影する。
+const GANTT_REPEAT_HORIZON_DAYS = 90; // 未来の繰り返しを表示する範囲（今日から約3ヶ月先まで）
+const GANTT_REPEAT_MAX_OCC = 12;      // 1タスクあたりの最大投影回数（毎日など高頻度の暴走防止）
+function projectedRepeatOccurrences(t) {
+  if (!t || !t.repeat || !t.repeat.unit || t.status === "completed") return [];
+  const anchor0 = t.dueDate || t.startDate;
+  if (!anchor0) return []; // 日程が無いものは投影しない
+  const horizon = addDays(todayStr(), GANTT_REPEAT_HORIZON_DAYS);
+  const out = [];
+  let anchor = anchor0, s = t.startDate, e = t.endDate, d = t.dueDate;
+  for (let i = 0; i < GANTT_REPEAT_MAX_OCC; i++) {
+    const next = nextRepeatDate(anchor, t.repeat);
+    if (!next || next <= anchor) break;
+    if (t.repeat.until && next > t.repeat.until) break;
+    if (next > horizon) break;
+    const delta = diffDays(next, anchor);
+    s = s ? addDays(s, delta) : null;
+    e = e ? addDays(e, delta) : null;
+    d = d ? addDays(d, delta) : null;
+    anchor = next;
+    out.push({ startDate: s, endDate: e, dueDate: d });
+  }
+  return out;
+}
+// 「日程あり」＝開始日/終了日/納期のいずれかを持つ。
+function taskIsScheduled(t) { return !!(t && (t.startDate || t.endDate || t.dueDate)); }
+// ガントの「完了・日程なしを隠す」用: 日程を持つ、または日程を持つ子孫を持つタスクidの集合。
+// （日程の無い親でも、日程のある子を持つなら残す＝サブツリーを誤って隠さない）
+function ganttScheduleKeepSet() {
+  const byId = new Map(state.tasks.filter(t => !t.deletedAt).map(t => [t.id, t]));
+  const keep = new Set();
+  for (const t of byId.values()) {
+    if (!taskIsScheduled(t)) continue;
+    let cur = t;
+    while (cur && !keep.has(cur.id)) { keep.add(cur.id); cur = cur.parentTaskId ? byId.get(cur.parentTaskId) : null; }
+  }
+  return keep;
+}
+
 function drawGantt(body, rows) {
   if (!rows.length) {
     body.insertAdjacentHTML("beforeend", `<div class="empty-msg">ガントに表示できるタスクがありません</div>`);
@@ -3594,6 +3639,9 @@ function drawGantt(body, rows) {
   // ---- 期間レンジ ----
   const today = todayStr();
   let min = today, max = today;
+  // 繰り返しタスクの未来の回を1度だけ計算してキャッシュ（レンジ計算とバー描画で共用）
+  const occByTask = new Map();
+  for (const r of rows) if (r.kind === "task" && r.task.repeat) occByTask.set(r.task.id, projectedRepeatOccurrences(r.task));
   for (const r of rows) {
     if (r.kind !== "task") continue;
     const t = r.task;
@@ -3602,6 +3650,7 @@ function drawGantt(body, rows) {
       const span = collapsedGanttSpan(t);
       if (span) dates.push(span.start, span.end);
     }
+    for (const occ of (occByTask.get(t.id) || [])) dates.push(occ.startDate, occ.endDate, occ.dueDate); // 未来の繰り返しも範囲に含める
     for (const d of dates) {
       if (!d) continue;
       if (d < min) min = d;
@@ -3749,6 +3798,19 @@ function drawGantt(body, rows) {
       const late = t.status === "active" && t.dueDate < today;
       barsHtml += `<path d="M${mx},${my - 7} L${mx + 7},${my} L${mx},${my + 7} L${mx - 7},${my} Z"
         fill="${late ? "var(--danger)" : "var(--milestone)"}" data-task="${t.id}" data-testid="gantt-milestone" style="cursor:pointer"/>`;
+    }
+    // 繰り返しタスクの未来の回（ゴースト表示：薄い破線バー／菱形。クリック等は無効＝あくまで予定の投影）
+    if (!collapsedParent) {
+      for (const occ of (occByTask.get(t.id) || [])) {
+        if (occ.startDate && occ.endDate) {
+          const gx = dx(occ.startDate);
+          const gw = Math.max(dw * .6, (diffDays(occ.endDate, occ.startDate) + 1) * dw);
+          barsHtml += `<rect x="${gx}" y="${y}" width="${gw}" height="${G_BAR_H}" rx="4" fill="${color}" opacity=".16" stroke="${color}" stroke-opacity=".55" stroke-dasharray="3,2" pointer-events="none" data-testid="gantt-repeat-ghost"/>`;
+        } else if (occ.dueDate) {
+          const gmx = dx(occ.dueDate) + dw / 2, gmy = y + G_BAR_H / 2;
+          barsHtml += `<path d="M${gmx},${gmy - 6} L${gmx + 6},${gmy} L${gmx},${gmy + 6} L${gmx - 6},${gmy} Z" fill="var(--milestone)" opacity=".35" pointer-events="none" data-testid="gantt-repeat-ghost"/>`;
+        }
+      }
     }
     // 日付なしタスクのラベル
     if (!t.startDate && !t.dueDate) {
