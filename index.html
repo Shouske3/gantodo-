@@ -1133,9 +1133,13 @@ function hasTodayReason(t) {
 // どちらも無ければ「期間中ではない」とみなす（待機中＝対応待ちの表示条件に使う）。
 function todayWithinPeriod(t) {
   const today = todayStr();
-  if (!t.startDate && !t.endDate) return false;
-  if (t.startDate && today < t.startDate) return false;
-  if (t.endDate && today > t.endDate) return false;
+  // 片方しか無い場合は「その1日だけの期間」として扱う（開始日だけ／終了日だけのタスクが
+  // 開始以降ずっと期間内＝Todayの完了や待機中に居座り続けるのを防ぐ）。
+  const s = t.startDate || t.endDate;
+  const e = t.endDate || t.startDate;
+  if (!s && !e) return false;
+  if (s && today < s) return false;
+  if (e && today > e) return false;
   return true;
 }
 // 期限切れ（アクティブで、納期または終了日が今日より前）。バッジ表示・期限超過リスト・件数で共通利用。
