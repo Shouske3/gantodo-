@@ -993,6 +993,32 @@ async function collectAttachmentFilesForSync(alreadyOnServer) {
   }
   return { files, fileIds, skipped };
 }
+// 添付ファイルの本体を、コアデータ（タスク/メモ）同期の後で「小さなバッチ」に分けて別送する。
+// コアデータ＋全添付を1回のpushに載せると数MBになり、iPhone(Safari)の送信が失敗して
+// 「同期完了と表示されるのにタスクがサーバーに届かない」不具合が起きていた（2026-09-11）。
+// 各pushには coreData を必ず同梱する（GASのpushは data 全体で上書きするため、添付だけ送ると
+// タスク/メモが消える）。fileIds で既存＆既送の添付を保持しつつ、このバッチの本体だけを追加する。
+const UPLOAD_FILE_BATCH_BYTES = 800 * 1024; // 1回のpushに載せる添付本体の合計(base64長)の目安
+async function uploadNewFiles(gasUrl, gasKey, files, fileIds, coreData) {
+  if (!files || !files.length) return;
+  let i = 0;
+  while (i < files.length) {
+    const batch = [];
+    let bytes = 0;
+    // 最低1件は入れる（1件が目安を超えても送る）。以降は目安に収まる範囲で詰める。
+    do {
+      const f = files[i++];
+      batch.push(f);
+      bytes += (f.data || "").length;
+    } while (i < files.length && bytes + (files[i].data || "").length <= UPLOAD_FILE_BATCH_BYTES);
+    const res = await fetch(gasUrl, {
+      method: "POST", headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ key: gasKey, action: "push", filesMerge: true, fileIds, data: { ...coreData, files: batch } }),
+    });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+  }
+}
 // サーバーが持つ添付のうち、ローカルにまだ無いものだけを「小さなバッチ」で取得して保存する。
 // pullに全添付を載せると受信データが数十MBになりiPhone(Safari)がpull-parseで失敗するため、添付はこの別経路で少しずつ受け取る。
 // バッチが失敗しても致命的にせず（次回同期でリトライ）、コアデータ（タスク/メモ）の同期は必ず成立させる。
@@ -4725,11 +4751,11 @@ async function syncNow(statusEl, opts = {}) {
     step = "collect";
     const known = syncServerSupportsFilesMerge ? (syncServerFileIds || new Set()) : null;
     const { files, fileIds, skipped } = await collectAttachmentFilesForSync(known);
-    if (skipped && !quiet) toast(`⚠ 添付ファイルが大きすぎるため${skipped}件は今回同期されませんでした`, "warn");
-    const pushBody = { key: gasKey, action: "push", data: {
-      projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
-      files, resetAt: state.resetAt, today: state.today,
-    } };
+    // ★ コアデータ（タスク/メモ等）は添付本体を載せずに送る＝小さく確実に届く。
+    //   添付本体を同じpushに載せると、大きくなりすぎてpushごと失敗し「iPhoneのタスクがPCに同期されない」不具合が起きていた（2026-09-11）。
+    //   fileIdsでサーバー保持済みの添付は維持し、新規添付の本体は同期完了後に uploadNewFiles で小分けに別送する（pullのskipFiles設計と対称）。
+    const coreData = { projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos, files: [], resetAt: state.resetAt, today: state.today };
+    const pushBody = { key: gasKey, action: "push", data: coreData };
     if (syncServerSupportsFilesMerge) { pushBody.filesMerge = true; pushBody.fileIds = fileIds; }
     step = "push";
     const pushRes = await fetch(gasUrl, {
@@ -4746,6 +4772,12 @@ async function syncNow(statusEl, opts = {}) {
     if (!typing) render(); else renderSidebar();
     setStatus("✔ 同期完了 " + new Date().toLocaleTimeString());
     if (!quiet) toast("同期が完了しました");
+    // 添付本体は同期完了後に小分けで別送（コアデータ同期は既に成立。失敗しても致命的にしない）。
+    if (syncServerSupportsFilesMerge && files.length) {
+      try { await uploadNewFiles(gasUrl, gasKey, files, fileIds, coreData); }
+      catch (e) { console.warn("uploadNewFiles failed", e); }
+    }
+    if (skipped && !quiet) toast(`添付ファイル${skipped}件は次回以降の同期で順次アップロードします`, "warn");
   } catch (e) {
     // どの段階でどのエラーが出たかをステータス欄にも残す（自動同期＝トーストが出ない失敗も見えるように）
     window.__lastSyncError = `[${step}/${e.name || "Error"}] ${e.message}`;
