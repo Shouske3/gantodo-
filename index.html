@@ -3234,11 +3234,12 @@ function renderToday(body, actions) {
   let ordered = autoSortToday(all);
   if (state.today.manualOrder) {
     const idx = new Map(state.today.manualOrder.map((id, i) => [id, i]));
-    ordered = ordered.slice().sort((a, b) => {
-      const ia = idx.has(a.id) ? idx.get(a.id) : 1e9;
-      const ib = idx.has(b.id) ? idx.get(b.id) : 1e9;
-      return ia - ib;
-    });
+    // 手動並び順に含まれないタスク（他端末で追加して同期された新規タスク、日付変更で今日入りしたタスク等）は、
+    // 「新規タスクは常に先頭」の方針に合わせて自動順のまま先頭へ置く。
+    // 以前は末尾(1e9)へ沈めていたため、iPhoneで作った新規タスクがPCの今日リスト最下部に埋もれていた（2026-09-11修正）。
+    const unknown = ordered.filter(t => !idx.has(t.id));
+    const known = ordered.filter(t => idx.has(t.id)).sort((a, b) => idx.get(a.id) - idx.get(b.id));
+    ordered = [...unknown, ...known];
   }
 
   if (!ordered.length) {
