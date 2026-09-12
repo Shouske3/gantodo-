@@ -1011,11 +1011,7 @@ async function uploadNewFiles(gasUrl, gasKey, files, fileIds, coreData) {
       batch.push(f);
       bytes += (f.data || "").length;
     } while (i < files.length && bytes + (files[i].data || "").length <= UPLOAD_FILE_BATCH_BYTES);
-    const res = await fetch(gasUrl, {
-      method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ key: gasKey, action: "push", filesMerge: true, fileIds, data: { ...coreData, files: batch } }),
-    });
-    const j = await res.json();
+    const j = await gasPost(gasUrl, { key: gasKey, action: "push", filesMerge: true, fileIds, data: { ...coreData, files: batch } });
     if (j.error) throw new Error(j.error);
   }
 }
@@ -1030,11 +1026,7 @@ async function fetchMissingFiles(gasUrl, gasKey, serverFileIds) {
   for (let i = 0; i < missing.length; i += BATCH) {
     const ids = missing.slice(i, i + BATCH);
     try {
-      const res = await fetch(gasUrl, {
-        method: "POST", headers: { "Content-Type": "text/plain" },
-        body: JSON.stringify({ key: gasKey, action: "getFiles", ids }),
-      });
-      const j = await res.json();
+      const j = await gasPost(gasUrl, { key: gasKey, action: "getFiles", ids });
       await applyIncomingFiles(j.files || []);
     } catch { /* このバッチは次回同期でリトライ */ }
   }
@@ -4665,19 +4657,34 @@ async function pushStateToGas() {
   if (!gasUrl) return { ok: false, error: "not configured" };
   try {
     const { files } = await collectAttachmentFilesForSync();
-    const res = await fetch(gasUrl, {
-      method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ key: gasKey, action: "push", data: {
-        projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
-        files, resetAt: state.resetAt, today: state.today,
-      } }),
-    });
-    const json = await res.json();
+    const json = await gasPost(gasUrl, { key: gasKey, action: "push", data: {
+      projects: state.projects, sections: state.sections, tasks: state.tasks, memos: state.memos,
+      files, resetAt: state.resetAt, today: state.today,
+    } });
     if (json.error) throw new Error(json.error);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message };
   }
+}
+
+// GASへのPOST（fetch＋json解析）を、モバイル回線の一時的な失敗（瞬断・GASの一時エラー・
+// 受信途中で切れてjson解析に失敗、等）に対して自動リトライで吸収する。
+// pull/pushはいずれも冪等（pullは読み取り、pushは現在のstateで全上書き）なので、
+// 再送しても二重登録やデータ破損は起きない。恒久的な失敗（合言葉違い等）は.errorで即返るので
+// リトライせず素通しする（呼び出し側がthrowする）。
+async function gasPost(gasUrl, body, tries = 3) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(gasUrl, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(body) });
+      return await res.json(); // 解析成功＝サーバー応答が届いた（.errorの有無は呼び出し側が判断）
+    } catch (e) {
+      lastErr = e; // ネットワーク失敗 or json解析失敗（受信途中で切れた等）→ リトライ対象
+      if (i < tries - 1) await new Promise(r => setTimeout(r, 600 * (i + 1))); // 0.6s → 1.2s バックオフ
+    }
+  }
+  throw lastErr;
 }
 
 // 変更後しばらくしてから自動同期（連続編集中に何度も送らないよう15秒デバウンス）
@@ -4704,12 +4711,8 @@ async function syncNow(statusEl, opts = {}) {
   try {
     // pullは添付本体を載せず軽く受け取る（skipFiles）。添付は後で getFiles で小分けに取得する。
     // text/plain でPOSTするとCORSプリフライトを回避できる（GASの制約対応）
-    const pullRes = await fetch(gasUrl, {
-      method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ key: gasKey, action: "pull", skipFiles: true }),
-    });
+    const pull = await gasPost(gasUrl, { key: gasKey, action: "pull", skipFiles: true });
     step = "pull-parse";
-    const pull = await pullRes.json();
     if (pull.error) throw new Error(pull.error);
     step = "merge";
     syncServerSupportsFilesMerge = !!pull.filesMerge; // 新GAS（差分同期対応）かどうか
@@ -4759,12 +4762,8 @@ async function syncNow(statusEl, opts = {}) {
     const pushBody = { key: gasKey, action: "push", data: coreData };
     if (syncServerSupportsFilesMerge) { pushBody.filesMerge = true; pushBody.fileIds = fileIds; }
     step = "push";
-    const pushRes = await fetch(gasUrl, {
-      method: "POST", headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify(pushBody),
-    });
+    const push = await gasPost(gasUrl, pushBody);
     step = "push-parse";
-    const push = await pushRes.json();
     if (push.error) throw new Error(push.error);
     step = "render";
     save();
