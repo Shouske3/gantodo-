@@ -11,7 +11,8 @@
  * サーバーの実装です（README.md「Claude連携」参照）。
  */
 
-// ★ 任意の合言葉に変更してください（アプリの設定画面と同じ値にする）
+// ★ この行を、GanTODOアプリの「設定・データ → 共有キー」に入っている合言葉と“完全に同じ”にしてください。
+//    （今あなたのアプリに入っている値: shosuke-gantodo-2026 ／ 変えると同期できなくなります）
 const SHARED_KEY = "watashi-no-aikotoba";
 
 function doPost(e) {
@@ -35,22 +36,24 @@ function doPost(e) {
   if (req.key !== SHARED_KEY) return json_({ error: "共有キーが一致しません" });
 
   if (req.action === "pull") {
-    const data = readData_();
-    // 受信量の削減（モバイルで巨大データの受信/解析失敗＝pull-parseエラーを防ぐ）。
-    // 添付の本体はpullに載せず、別途 getFiles で小分けに取得する。allFileIds で全添付idだけ伝える。
-    if (data && data.files) {
-      var allIds = data.files.map(function (f) { return f.id; });
-      if (req.skipFiles) {
-        // 添付本体を一切返さない（タスク・メモだけの軽いpull）。
-        data.allFileIds = allIds;
-        data.files = [];
-      } else if (req.haveFileIds && req.haveFileIds.length) {
-        // 差分pull: 既に持っている添付の本体は返さない（後方互換用）。
-        var have = {};
-        for (var i = 0; i < req.haveFileIds.length; i++) have[req.haveFileIds[i]] = true;
-        data.allFileIds = allIds;
-        data.files = data.files.filter(function (f) { return !have[f.id]; });
-      }
+    ensureMigrated_(); // 旧形式（シートに添付本体が埋まっている）なら初回にドライブへ移す
+    const data = readData_() || {};
+    // 添付本体はGoogleドライブに置くのでpullには載せない。全添付idだけ allFileIds で伝える。
+    const allIds = listDriveFileIds_();
+    if (req.skipFiles) {
+      // 添付本体を一切返さない（タスク・メモだけの軽いpull）。
+      data.allFileIds = allIds;
+      data.files = [];
+    } else if (req.haveFileIds && req.haveFileIds.length) {
+      // 差分pull: 既に持っている添付の本体は返さない（後方互換用）。持っていない分だけドライブから返す。
+      var have = {};
+      for (var i = 0; i < req.haveFileIds.length; i++) have[req.haveFileIds[i]] = true;
+      data.allFileIds = allIds;
+      data.files = getDriveFiles_(allIds.filter(function (id) { return !have[id]; }));
+    } else {
+      // 後方互換: 全添付をドライブから返す（基本はskipFilesが使われるのでここは通常通らない）。
+      data.allFileIds = allIds;
+      data.files = getDriveFiles_(allIds);
     }
     // filesMerge: このGASが添付ファイルの差分同期に対応していることをクライアントに知らせるフラグ。
     // 対応クライアントは、次のpushで「新規ファイルの本体」と「保持するファイルid一覧」だけを送り、変更のない添付を再送しない。
@@ -58,28 +61,24 @@ function doPost(e) {
   }
 
   if (req.action === "getFiles") {
-    // 添付ファイルの本体を、指定されたidの分だけ小分けに返す（pullを軽く保つための別経路）。
-    const data = readData_() || {};
-    var want = {};
-    (req.ids || []).forEach(function (id) { want[id] = true; });
-    var files = (data.files || []).filter(function (f) { return want[f.id]; });
-    return json_({ files: files });
+    ensureMigrated_();
+    // 添付ファイルの本体を、指定されたidの分だけGoogleドライブから小分けに返す（pullを軽く保つための別経路）。
+    return json_({ files: getDriveFiles_(req.ids || []) });
   }
 
   if (req.action === "push") {
+    ensureMigrated_();
     const incoming = req.data || {};
-    if (req.filesMerge) {
-      // 添付ファイルの差分同期: 既存ファイルのうち fileIds に含まれるものを残し、送られてきた新規ファイルを加える。
-      // これによりクライアントは変更のない添付（数MBになりうる）を毎回再送しなくて済む（特にモバイル回線の送信失敗対策）。
-      const existing = readData_() || {};
-      const keep = {};
-      (req.fileIds || []).forEach(function (id) { keep[id] = true; });
-      const byId = {};
-      (existing.files || []).forEach(function (f) { if (keep[f.id]) byId[f.id] = f; });
-      (incoming.files || []).forEach(function (f) { byId[f.id] = f; });
-      incoming.files = Object.keys(byId).map(function (k) { return byId[k]; });
-    }
+    const folder = getAttachmentFolder_();
+    // 新規添付の本体をGoogleドライブへ保存（idごとに1ファイル）。シートには載せない＝シートが肥大化しない。
+    (incoming.files || []).forEach(function (f) { if (f && f.id && f.data) saveDriveFile_(folder, f); });
+    // 保持する添付idを決める:
+    //  filesMerge時は fileIds（クライアントが参照中の全id）を残す。
+    //  非filesMerge（全置換・リセット）時は送られてきたfilesのidだけ残す（リセットで空なら全削除）。
+    var keepIds = req.filesMerge ? (req.fileIds || []) : (incoming.files || []).map(function (f) { return f.id; });
+    delete incoming.files; // シートにはコアデータだけ保存
     writeData_(incoming);
+    gcDriveFiles_(keepIds); // 参照されなくなった添付をドライブから掃除（削除タスクの添付GC）
     return json_({ ok: true, savedAt: new Date().toISOString() });
   }
 
@@ -125,6 +124,75 @@ function writeData_(data) {
   for (let i = 0; i < s.length; i += SIZE) rows.push([s.slice(i, i + SIZE)]);
   sheet.clearContents();
   if (rows.length) sheet.getRange(1, 1, rows.length, 1).setValues(rows);
+}
+
+/* ============================================================
+   添付ファイルはGoogleドライブに保存する（スプレッドシート肥大化＝push失敗の根治、2026-09-13）。
+   1添付＝ドライブ上の1ファイル（ファイル名＝添付id）。専用フォルダ「GanTODO添付」に格納。
+   これによりコアデータ(タスク/メモ)のpushは、添付が何MBあってもシートへの書き込みは軽いまま。
+   ============================================================ */
+var ATTACH_FOLDER_NAME = "GanTODO添付";
+function getAttachmentFolder_() {
+  var it = DriveApp.getFoldersByName(ATTACH_FOLDER_NAME);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(ATTACH_FOLDER_NAME);
+}
+function trashByName_(folder, name) {
+  var it = folder.getFilesByName(name);
+  while (it.hasNext()) it.next().setTrashed(true);
+}
+function saveDriveFile_(folder, f) {
+  trashByName_(folder, f.id); // 同じidの古い本体があれば捨ててから作り直す（重複防止）
+  var bytes = Utilities.base64Decode(f.data);
+  var blob = Utilities.newBlob(bytes, f.mime || "application/octet-stream", f.id);
+  folder.createFile(blob);
+}
+function listDriveFileIds_() {
+  var folder = getAttachmentFolder_();
+  var it = folder.getFiles();
+  var ids = [];
+  while (it.hasNext()) ids.push(it.next().getName());
+  return ids;
+}
+function getDriveFiles_(ids) {
+  var folder = getAttachmentFolder_();
+  var out = [];
+  (ids || []).forEach(function (id) {
+    var fit = folder.getFilesByName(id);
+    if (fit.hasNext()) {
+      var file = fit.next();
+      var blob = file.getBlob();
+      out.push({ id: id, mime: blob.getContentType(), data: Utilities.base64Encode(blob.getBytes()), createdAt: file.getDateCreated().toISOString() });
+    }
+  });
+  return out;
+}
+function gcDriveFiles_(keepIds) {
+  var keep = {};
+  (keepIds || []).forEach(function (id) { keep[id] = true; });
+  var folder = getAttachmentFolder_();
+  var it = folder.getFiles();
+  while (it.hasNext()) {
+    var file = it.next();
+    if (!keep[file.getName()]) file.setTrashed(true);
+  }
+}
+// 旧形式（シートのJSONに添付本体filesが埋め込まれている）を、初回アクセス時にドライブへ移す。
+// 移行後はシートにfilesを残さないので、以後この関数は空振り（軽い読み取りだけ）になる。
+// 2台同時アクセスでの二重移行を避けるためスクリプトロックで直列化する。
+function ensureMigrated_() {
+  var data = readData_();
+  if (!(data && data.files && data.files.length)) return; // 既に移行済み or 添付なし
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(300000); } catch (e) { return; } // 5分待って取れなければ諦める（他が移行中）
+  try {
+    data = readData_(); // ロック取得後に再確認（他のリクエストが先に移行済みかもしれない）
+    if (data && data.files && data.files.length) {
+      var folder = getAttachmentFolder_();
+      data.files.forEach(function (f) { if (f && f.id && f.data) saveDriveFile_(folder, f); });
+      delete data.files;
+      writeData_(data); // シートはコアデータだけに縮小
+    }
+  } finally { lock.releaseLock(); }
 }
 
 /* ============================================================
@@ -434,11 +502,12 @@ function emptyOutput_() {
   return ContentService.createTextOutput("");
 }
 
-// カレンダー権限を許可するための手動実行用関数。
+// カレンダー＋ドライブの権限を許可するための手動実行用関数。
 // エディタ上部の関数選択で「authorizeCalendarAccess」を選んで▷実行を押すと、
-// 初回だけカレンダーへのアクセス許可を求める画面が出るので許可する（実行後は削除してOK）。
+// 初回だけアクセス許可を求める画面が出るので許可する（カレンダーと、添付保存用のGoogleドライブの両方）。
 function authorizeCalendarAccess() {
   getGanTodoCalendar_();
+  getAttachmentFolder_(); // 添付保存用フォルダへのアクセス（ドライブ権限）も同時に許可させる
 }
 
 function json_(obj) {
