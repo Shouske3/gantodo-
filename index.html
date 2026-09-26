@@ -292,6 +292,9 @@ svg text { user-select: none; }
 #memo-preview code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
 #memo-preview a { color: var(--accent); }
 #memo-preview p { margin: 4px 0; }
+/* メモ編集フォームは右パネル(#detail-panel)に表示（④）。本文は幅いっぱい＆高さを広く取る（iPhoneで枠が小さく余白だらけになる不具合の修正） */
+#detail-panel #memo-body { width: 100%; box-sizing: border-box; resize: vertical; min-height: 55vh; line-height: 1.6; flex: none; }
+#detail-panel #memo-preview { width: 100%; box-sizing: border-box; min-height: 55vh; flex: none; }
 
 /* ===== Modal ===== */
 .modal-bg {
@@ -3384,7 +3387,7 @@ function renderMemoPanel(panel, memo) {
     </div>
     ${memoPreview
       ? `<div id="memo-preview" data-testid="memo-preview" style="margin-top:8px">${renderMarkdown(memo.body)}</div>`
-      : `<textarea id="memo-body" data-testid="memo-body" style="margin-top:8px;min-height:300px" placeholder="**見出し**、*太字*、- リスト、() チェックボックス などMarkdown対応">${esc(memo.body)}</textarea>`}`;
+      : `<textarea id="memo-body" data-testid="memo-body" style="margin-top:8px" placeholder="**見出し**、*太字*、- リスト、() チェックボックス などMarkdown対応">${esc(memo.body)}</textarea>`}`;
   panel.querySelector("[data-testid=memo-close]").onclick = () => { editingMemoId = null; render(); };
   const titleEl = panel.querySelector("#memo-title");
   titleEl.onchange = () => { memo.title = titleEl.value.trim() || "無題のメモ"; memo.updatedAt = nowISO(); commit(); };
