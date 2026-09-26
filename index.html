@@ -2992,22 +2992,17 @@ function openProjectModal(projId) {
 
 /*========================================================
   一括編集（複数選択したタスクへまとめて反映）
+  ・以前はモーダルだったが、章介さんの依頼で右パネル（renderBulkPanel）内にインラインで表示する形へ変更（2026-09-26）。
+  ・フィールドのHTML生成・イベント配線・適用処理を関数に分け、右パネルから再利用する。
 ========================================================*/
-function openBulkEditModal() {
+// 一括編集フィールド群のHTML（チェックボックス付きの各項目）。
+function bulkFieldsHTML() {
   const ids = [...selectedTaskIds];
-  const tasks = ids.map(getTask).filter(Boolean);
-  if (!tasks.length) return;
-  // 詳細パネルが開いたままだとモーダルと重なって紛らわしい（フィールドが読みにくく操作できないように見える）ため、先に閉じる
-  if (detailTaskId) { detailTaskId = null; renderDetailPanel(); }
   const projOpts = `<option value="">（Inbox）</option>` + visibleProjects().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
     .map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   // 依存タスクの候補: 選択中のタスク同士は対象外（自己参照・循環の温床になりやすいため）
   const depCandidates = liveTasks().filter(x => !ids.includes(x.id));
-
-  const m = modalShell(`
-    <h2>一括編集（${tasks.length}件選択中）</h2>
-    <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">チェックを入れた項目だけが、選択中の全タスクへまとめて反映されます。</p>
-
+  return `
     <div class="bulk-field" data-field="project">
       <label><input type="checkbox" data-testid="bulk-project-on"> プロジェクト</label>
       <div class="bulk-inputs"><select data-testid="bulk-project">${projOpts}</select></div>
@@ -3094,15 +3089,13 @@ function openBulkEditModal() {
       </div>
     </div>
 
-    <div class="modal-foot">
-      <button class="btn" data-testid="bulk-cancel">キャンセル</button>
-      <span class="spacer"></span>
-      <button class="btn primary" data-testid="bulk-apply">${tasks.length}件に適用</button>
-    </div>`);
-
-  const $ = sel => m.querySelector(sel);
+  `;
+}
+// 一括編集フィールドのイベント配線（チェックon/off連動・自動チェック・セクション更新・依存検索・繰り返し曜日）
+function wireBulkFields(root) {
+  const $ = sel => root.querySelector(sel);
   // チェックのon/offで各項目の入力欄を有効/無効に切り替え
-  m.querySelectorAll(".bulk-field").forEach(fieldEl => {
+  root.querySelectorAll(".bulk-field").forEach(fieldEl => {
     const cb = fieldEl.querySelector("input[type=checkbox]");
     const sync = () => fieldEl.classList.toggle("off", !cb.checked);
     sync();
@@ -3134,13 +3127,13 @@ function openBulkEditModal() {
   $("[data-testid=bulk-repeat-unit]").onchange = () => {
     $("[data-testid=bulk-repeat-days]").style.display = $("[data-testid=bulk-repeat-unit]").value === "week" ? "flex" : "none";
   };
-
-  $("[data-testid=bulk-cancel]").onclick = closeModal;
-  $("[data-testid=bulk-apply]").onclick = () => {
-    const on = name => $(`[data-testid=bulk-${name}-on]`).checked;
-    let touched = 0, skippedDeps = 0;
-
-    for (const t of tasks) {
+}
+// 一括編集の適用処理。チェックの入った項目だけを全タスクへ反映する。返り値={touched, skippedDeps}
+function applyBulkFields(root, tasks) {
+  const $ = sel => root.querySelector(sel);
+  const on = name => $(`[data-testid=bulk-${name}-on]`).checked;
+  let touched = 0, skippedDeps = 0;
+  for (const t of tasks) {
       let changed = false;
       if (on("project")) {
         t.projectId = $("[data-testid=bulk-project]").value || null;
@@ -3199,20 +3192,15 @@ function openBulkEditModal() {
           const from = $("[data-testid=bulk-repeat-from]").value === "completion" ? "completion" : "due";
           const until = $("[data-testid=bulk-repeat-until]").value || null;
           const byDay = unit === "week"
-            ? [...m.querySelectorAll("[data-testid=bulk-repeat-days] input:checked")].map(cb => Number(cb.value)).sort((a, b) => a - b)
+            ? [...root.querySelectorAll("[data-testid=bulk-repeat-days] input:checked")].map(cb => Number(cb.value)).sort((a, b) => a - b)
             : undefined;
           t.repeat = { unit, interval, from, ...(until ? { until } : {}), ...(byDay && byDay.length ? { byDay } : {}) };
         }
         changed = true;
       }
       if (changed) { touch(t); touched++; }
-    }
-    closeModal();
-    if (touched) { selectedTaskIds.clear(); commit(); }
-    let msg = `${touched}件のタスクを更新しました`;
-    if (skippedDeps) msg += `（依存タスクの追加は${skippedDeps}件、循環依存のためスキップ）`;
-    toast(msg);
-  };
+  }
+  return { touched, skippedDeps };
 }
 
 /* ---- タスクの複製（サブツリーごと）---- */
@@ -3319,7 +3307,7 @@ function bulkDelete() {
   commit();
   toast(`${tasks.length}件をゴミ箱に移動しました`);
 }
-// 右パネルに複数選択時の一括操作メニューを表示（TickTick風）
+// 右パネルに複数選択時の一括操作メニュー＋詳細な一括編集フィールドを表示（TickTick風・全部右パネルに集約）
 function renderBulkPanel(panel) {
   const tasks = bulkSelectedTasks();
   const n = tasks.length;
@@ -3337,19 +3325,31 @@ function renderBulkPanel(panel) {
         <button class="flag-btn" data-testid="bulk-prio-none" data-p="none" style="color:var(--text-dim)" title="優先度: なし">⚐</button>
       </div>
     </div>
-    <div class="bulk-actions">
-      <button class="bulk-act" data-testid="bulk-complete">✓ ${allDone ? "完了を取消" : "完了にする"}</button>
-      <button class="bulk-act" data-testid="bulk-duplicate">⧉ 複製する</button>
-      <button class="bulk-act" data-testid="bulk-edit-btn">⚙ 詳細を一括編集</button>
-      <button class="bulk-act danger" data-testid="bulk-delete">🗑 削除する</button>
+    <div class="bulk-actions" style="grid-template-columns:1fr 1fr 1fr">
+      <button class="bulk-act" data-testid="bulk-complete">✓ ${allDone ? "完了取消" : "完了"}</button>
+      <button class="bulk-act" data-testid="bulk-duplicate">⧉ 複製</button>
+      <button class="bulk-act danger" data-testid="bulk-delete">🗑 削除</button>
+    </div>
+    <div style="margin-top:14px;font-size:12px;font-weight:700">項目をまとめて変更</div>
+    <p style="font-size:11px;color:var(--text-dim);margin:2px 0 8px">チェックを入れた項目だけが、選択中の全タスクへまとめて反映されます。</p>
+    ${bulkFieldsHTML()}
+    <div style="margin-top:10px;text-align:right">
+      <button class="btn primary" data-testid="bulk-apply">${n}件に適用</button>
     </div>
     <p style="font-size:11px;color:var(--text-dim);margin-top:10px">Ctrl＋クリックで選択を追加／解除。Ctrlを押しながらドラッグ＆ドロップでタスクを複製できます。</p>`;
   panel.querySelector("[data-testid=bulk-clear-btn]").onclick = () => { selectedTaskIds.clear(); render(); };
   panel.querySelectorAll(".dp-flags [data-p]").forEach(b => { b.onclick = () => bulkSetPriority(b.dataset.p); });
   panel.querySelector("[data-testid=bulk-complete]").onclick = bulkToggleComplete;
   panel.querySelector("[data-testid=bulk-duplicate]").onclick = bulkDuplicate;
-  panel.querySelector("[data-testid=bulk-edit-btn]").onclick = openBulkEditModal;
   panel.querySelector("[data-testid=bulk-delete]").onclick = bulkDelete;
+  wireBulkFields(panel);
+  panel.querySelector("[data-testid=bulk-apply]").onclick = () => {
+    const { touched, skippedDeps } = applyBulkFields(panel, bulkSelectedTasks());
+    if (touched) { selectedTaskIds.clear(); commit(); }
+    let msg = `${touched}件のタスクを更新しました`;
+    if (skippedDeps) msg += `（依存タスクの追加は${skippedDeps}件、循環依存のためスキップ）`;
+    toast(msg);
+  };
 }
 
 // 右パネルにメモの内容（編集フォーム）を表示する。従来は中央にあった編集エリアをここへ移した（④）。
