@@ -153,6 +153,14 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .bulk-field .bulk-inputs { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .bulk-field .bulk-inputs input, .bulk-field .bulk-inputs select { min-width: 0; }
 .bulk-field.off .bulk-inputs { opacity: .4; pointer-events: none; }
+/* 右パネルの一括操作メニュー（TickTick風） */
+.bulk-panel-prio { padding: 8px 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
+.bulk-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.bulk-act { padding: 12px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg3); color: var(--text); font-size: 13px; cursor: pointer; text-align: center; }
+.bulk-act:hover { border-color: var(--accent); }
+.bulk-act.danger { color: var(--danger); }
+/* メモ編集を右パネルへ移したので、中央のメモ一覧は単独表示時に幅いっぱいに広げる */
+#memo-list.solo { width: 100%; min-width: 0; }
 /* D&D ドロップ位置の表示: 上端=前に挿入 / 下端=後ろに挿入 / 中央=サブタスク化 */
 .task-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .task-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
@@ -1886,20 +1894,12 @@ function render() {
   renderDetailPanel();
   renderBulkBar();
 }
-// 複数選択中に画面下部へ出す「一括編集」バー
+// 一括編集メニューは右パネル（renderBulkPanel）に移したため、画面下部のバーは常に非表示にする。
+// （呼び出し箇所の互換のため関数は残す。削除済みタスクの選択解除だけここで行う）
 function renderBulkBar() {
   const bar = document.getElementById("bulk-bar");
-  // ゴミ箱に消えた・削除されたタスクは選択から除く
   for (const id of [...selectedTaskIds]) if (!getTask(id) || getTask(id).deletedAt) selectedTaskIds.delete(id);
-  const n = selectedTaskIds.size;
-  if (!n) { bar.classList.remove("show"); bar.innerHTML = ""; return; }
-  bar.classList.add("show");
-  bar.innerHTML = `
-    <span class="count" data-testid="bulk-count">${n}件選択中</span>
-    <button class="btn small primary" data-testid="bulk-edit-btn">一括編集</button>
-    <button class="btn small" data-testid="bulk-clear-btn">選択解除</button>`;
-  bar.querySelector("[data-testid=bulk-edit-btn]").onclick = openBulkEditModal;
-  bar.querySelector("[data-testid=bulk-clear-btn]").onclick = () => { selectedTaskIds.clear(); render(); };
+  if (bar) { bar.classList.remove("show"); bar.innerHTML = ""; }
 }
 function renderMain() {
   renderSidebar();
@@ -2020,9 +2020,12 @@ function taskRowEl(t, opts = {}) {
       const mode = row.classList.contains("drop-before") ? "before"
         : row.classList.contains("drop-after") ? "after" : "into";
       clearMarks();
-      const ids = parseDragIds(e);
+      let ids = parseDragIds(e);
+      const dup = e.ctrlKey || e.metaKey; // Ctrl（Macは⌘）を押しながらドロップ＝移動ではなく複製（③）
+      if (dup) { ids = duplicateTasks(ids); if (!ids.length) return; }
       if (ids.length > 1) handleTaskDropMulti(ids, t.id, mode);
       else handleTaskDrop(ids[0], t.id, mode);
+      if (dup) toast(`${ids.length}件を複製しました`);
     });
   }
 
@@ -2361,6 +2364,7 @@ function openPrompt(label, defVal, cb) {
 /* ---- タスク詳細: 右サイドパネル（TickTick風・自動保存） ---- */
 function openTaskModal(taskId) { // 呼び出し箇所互換のため関数名は維持
   if (taskId !== detailTaskId) { noteEditing = false; editingDateField = null; editingParent = false; }
+  selectedTaskIds.clear();      // 単一タスクを開くときは複数選択を解除（右パネルが一括メニューにならないように）
   detailTaskId = taskId;
   ganttSelectedTaskId = taskId; // ガント表示中なら選択行をハイライト（他ビューでは無害）
   renderDetailPanel();
@@ -2373,6 +2377,15 @@ function closeDetail() {
 
 function renderDetailPanel() {
   const panel = document.getElementById("detail-panel");
+  // 1) 複数選択中 → 一括操作メニュー（TickTick風・右パネルに表示）
+  for (const id of [...selectedTaskIds]) if (!getTask(id) || getTask(id).deletedAt) selectedTaskIds.delete(id);
+  if (selectedTaskIds.size >= 1) { renderBulkPanel(panel); return; }
+  // 2) メモ表示中 → メモの内容を右パネルに表示（古いタスクが残ってメモが読みにくくならないように）
+  if (view.type === "memos" && editingMemoId) {
+    const memo = state.memos.find(m => m.id === editingMemoId && !m.deletedAt);
+    if (memo) { renderMemoPanel(panel, memo); return; }
+  }
+  // 3) タスク詳細
   const t = detailTaskId ? getTask(detailTaskId) : null;
   if (!t || t.deletedAt) {
     detailTaskId = null;
@@ -3202,6 +3215,227 @@ function openBulkEditModal() {
   };
 }
 
+/* ---- タスクの複製（サブツリーごと）---- */
+// 1件のタスクとその全サブタスクを新しいidで複製する。parentId=複製後の親。返り値=複製したトップのコピー。
+function cloneTaskSubtree(orig, parentId) {
+  const copy = {
+    ...orig,
+    id: uid(),
+    parentTaskId: parentId,
+    gcalEventId: null,                                   // 複製は自分用のカレンダー予定を新規作成する
+    status: "active", completedAt: null,                 // 「もう一度やる」用途が多いので未完了で作る
+    progress: orig.progress === 100 ? 0 : (orig.progress || 0),
+    deletedAt: null, archivedAt: null,
+    createdAt: nowISO(), updatedAt: nowISO(),
+    tags: [...(orig.tags || [])],
+    blockedBy: [...(orig.blockedBy || [])],
+    attachments: (orig.attachments || []).map(a => ({ ...a })),
+    nextAction: orig.nextAction ? { ...orig.nextAction } : null,
+    repeat: orig.repeat ? { ...orig.repeat } : null,
+  };
+  state.tasks.push(copy);
+  maybeQueueCalendarSync(copy);
+  const kids = state.tasks
+    .filter(x => x.parentTaskId === orig.id && !x.deletedAt && x.id !== copy.id)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  for (const k of kids) cloneTaskSubtree(k, copy.id);
+  return copy;
+}
+// 兄弟グループのsortOrderを0,1,2...に振り直す（複製で入れた小数を整数化）
+function resequenceSiblings(parentId, projectId, sectionId) {
+  const sibs = state.tasks.filter(x => !x.deletedAt
+    && (x.parentTaskId || null) === (parentId || null)
+    && (x.projectId || null) === (projectId || null)
+    && (x.sectionId || null) === (sectionId || null))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  sibs.forEach((x, i) => { x.sortOrder = i; });
+}
+// 複数タスクを複製する。祖先も選択に含まれるものは親側の複製に含まれるためスキップ。返り値=複製したトップの新id配列。
+function duplicateTasks(ids) {
+  const idSet = new Set(ids);
+  const tops = [...idSet].filter(id => {
+    const t = getTask(id);
+    if (!t || t.deletedAt) return false;
+    let p = t.parentTaskId;
+    while (p) { if (idSet.has(p)) return false; p = getTask(p)?.parentTaskId; }
+    return true;
+  });
+  const newIds = [];
+  for (const id of tops) {
+    const orig = getTask(id);
+    const copy = cloneTaskSubtree(orig, orig.parentTaskId || null);
+    copy.sortOrder = (orig.sortOrder || 0) + 0.5;        // 元のすぐ後ろへ
+    resequenceSiblings(copy.parentTaskId, copy.projectId, copy.sectionId);
+    newIds.push(copy.id);
+  }
+  return newIds;
+}
+
+/* ---- 一括操作（右パネルのメニューから）---- */
+function bulkSelectedTasks() {
+  return [...selectedTaskIds].map(getTask).filter(t => t && !t.deletedAt);
+}
+function bulkSetPriority(p) {
+  const tasks = bulkSelectedTasks();
+  for (const t of tasks) { t.priority = p; touch(t); }
+  commit();
+  toast(`${tasks.length}件の優先度を「${PRIO_LABEL[p]}」にしました`);
+}
+function bulkToggleComplete() {
+  const tasks = bulkSelectedTasks();
+  const allDone = tasks.length && tasks.every(t => t.status === "completed");
+  let n = 0;
+  for (const t of tasks) {
+    if (allDone) { // まとめて未完了に戻す
+      t.status = "active"; t.completedAt = null; if (t.progress === 100) t.progress = 0; touch(t); n++;
+    } else if (t.status !== "completed") { // 繰り返しはここでは単純完了（次回生成は個別完了で）
+      t.status = "completed"; t.completedAt = nowISO(); t.progress = 100; touch(t); n++;
+    }
+  }
+  selectedTaskIds.clear();
+  commit();
+  toast(allDone ? `${n}件を未完了に戻しました` : `${n}件を完了にしました`);
+}
+function bulkDuplicate() {
+  const copies = duplicateTasks([...selectedTaskIds]);
+  selectedTaskIds.clear();
+  commit();
+  toast(`${copies.length}件を複製しました`);
+}
+function bulkDelete() {
+  const tasks = bulkSelectedTasks();
+  if (!tasks.length) return;
+  if (!confirm(`選択した${tasks.length}件のタスク（サブタスクを含む）をゴミ箱に移動しますか？`)) return;
+  for (const t of tasks) { // deleteTaskは都度commitするので、ここでは直接deletedAtを付けて最後に一括commit
+    const stack = [t.id];
+    while (stack.length) {
+      const cur = getTask(stack.pop());
+      if (!cur || cur.deletedAt) continue;
+      cur.deletedAt = nowISO(); touch(cur);
+      for (const c of state.tasks.filter(x => x.parentTaskId === cur.id && !x.deletedAt)) stack.push(c.id);
+    }
+  }
+  selectedTaskIds.clear();
+  commit();
+  toast(`${tasks.length}件をゴミ箱に移動しました`);
+}
+// 右パネルに複数選択時の一括操作メニューを表示（TickTick風）
+function renderBulkPanel(panel) {
+  const tasks = bulkSelectedTasks();
+  const n = tasks.length;
+  panel.classList.add("open");
+  const allDone = n > 0 && tasks.every(t => t.status === "completed");
+  panel.innerHTML = `
+    <div class="dp-head">
+      <span class="count" data-testid="bulk-count" style="font-weight:700;color:var(--accent)">${n}件を選択中</span>
+      <button class="btn small dp-close-btn" data-testid="bulk-clear-btn" style="margin-left:auto" title="選択解除">✕</button>
+    </div>
+    <div class="bulk-panel-prio">
+      <div style="font-size:12px;font-weight:600;margin-bottom:4px">優先度をまとめて変更</div>
+      <div class="dp-flags">
+        ${["high", "medium", "low"].map(p => `<button class="flag-btn" data-testid="bulk-prio-${p}" data-p="${p}" style="color:${PRIO_COLOR[p]}" title="優先度: ${PRIO_LABEL[p]}">⚑</button>`).join("")}
+        <button class="flag-btn" data-testid="bulk-prio-none" data-p="none" style="color:var(--text-dim)" title="優先度: なし">⚐</button>
+      </div>
+    </div>
+    <div class="bulk-actions">
+      <button class="bulk-act" data-testid="bulk-complete">✓ ${allDone ? "完了を取消" : "完了にする"}</button>
+      <button class="bulk-act" data-testid="bulk-duplicate">⧉ 複製する</button>
+      <button class="bulk-act" data-testid="bulk-edit-btn">⚙ 詳細を一括編集</button>
+      <button class="bulk-act danger" data-testid="bulk-delete">🗑 削除する</button>
+    </div>
+    <p style="font-size:11px;color:var(--text-dim);margin-top:10px">Ctrl＋クリックで選択を追加／解除。Ctrlを押しながらドラッグ＆ドロップでタスクを複製できます。</p>`;
+  panel.querySelector("[data-testid=bulk-clear-btn]").onclick = () => { selectedTaskIds.clear(); render(); };
+  panel.querySelectorAll(".dp-flags [data-p]").forEach(b => { b.onclick = () => bulkSetPriority(b.dataset.p); });
+  panel.querySelector("[data-testid=bulk-complete]").onclick = bulkToggleComplete;
+  panel.querySelector("[data-testid=bulk-duplicate]").onclick = bulkDuplicate;
+  panel.querySelector("[data-testid=bulk-edit-btn]").onclick = openBulkEditModal;
+  panel.querySelector("[data-testid=bulk-delete]").onclick = bulkDelete;
+}
+
+// 右パネルにメモの内容（編集フォーム）を表示する。従来は中央にあった編集エリアをここへ移した（④）。
+function renderMemoPanel(panel, memo) {
+  panel.classList.add("open");
+  const projOpts = `<option value="">プロジェクト紐付けなし</option>` + visibleProjects().map(p =>
+    `<option value="${p.id}" ${memo.projectId === p.id ? "selected" : ""}>📁 ${esc(p.name)}</option>`).join("");
+  const linkedTask = memo.taskId ? liveTasks().find(t => t.id === memo.taskId) : null;
+  panel.innerHTML = `
+    <div class="dp-head">
+      <span class="dp-status" style="flex:1">📝 メモ</span>
+      <button class="btn small dp-close-btn" data-testid="memo-close" title="閉じる">✕</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="memo-title" data-testid="memo-title" value="${esc(memo.title)}" style="flex:1;min-width:150px;font-weight:700">
+      <button class="btn small ${memoPreview ? "" : "primary"}" data-testid="memo-edit-btn">編集</button>
+      <button class="btn small ${memoPreview ? "primary" : ""}" data-testid="memo-preview-btn">プレビュー</button>
+      <button class="btn small ${memo.archivedAt ? "primary" : ""}" data-testid="memo-archive-btn" title="${memo.archivedAt ? "アーカイブを解除して一覧に戻す" : "一覧から片付ける（検索では見つかる）"}">${memo.archivedAt ? "🗄️ 解除" : "🗄️ アーカイブ"}</button>
+      <button class="btn small danger" data-testid="memo-delete-btn">削除</button>
+    </div>
+    ${memo.archivedAt ? `<div class="badge" style="align-self:flex-start;margin-top:6px">🗄️ このメモはアーカイブ済み（一覧非表示・検索対象）</div>` : ""}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;margin-top:8px">
+      <select id="memo-proj" data-testid="memo-proj" style="flex:1;min-width:140px">${projOpts}</select>
+      <div style="flex:1;min-width:140px">
+        ${linkedTask
+          ? `<span class="dep-chip"><span class="linklike" data-testid="memo-task-open" title="このタスクを開く">☑ ${esc(linkedTask.title)} <span class="task-id-badge">#${shortId(linkedTask.id)}</span></span> <button data-testid="memo-task-clear">✕</button></span>`
+          : `<div class="dep-search">
+              <input id="memo-task-search" data-testid="memo-task-search" placeholder="＋タスクを名前かIDで検索して紐付け..." autocomplete="off">
+              <div id="memo-task-search-list" class="dep-search-list" data-testid="memo-task-search-list"></div>
+            </div>`}
+      </div>
+    </div>
+    ${memoPreview
+      ? `<div id="memo-preview" data-testid="memo-preview" style="margin-top:8px">${renderMarkdown(memo.body)}</div>`
+      : `<textarea id="memo-body" data-testid="memo-body" style="margin-top:8px;min-height:300px" placeholder="**見出し**、*太字*、- リスト、() チェックボックス などMarkdown対応">${esc(memo.body)}</textarea>`}`;
+  panel.querySelector("[data-testid=memo-close]").onclick = () => { editingMemoId = null; render(); };
+  const titleEl = panel.querySelector("#memo-title");
+  titleEl.onchange = () => { memo.title = titleEl.value.trim() || "無題のメモ"; memo.updatedAt = nowISO(); commit(); };
+  panel.querySelector("#memo-proj").onchange = e => { memo.projectId = e.target.value || null; memo.updatedAt = nowISO(); save(); };
+  if (linkedTask) {
+    panel.querySelector("[data-testid=memo-task-open]").onclick = () => { editingMemoId = null; openTaskModal(linkedTask.id); };
+    panel.querySelector("[data-testid=memo-task-clear]").onclick = () => { memo.taskId = null; memo.updatedAt = nowISO(); save(); render(); };
+  } else {
+    const taskCandidates = liveTasks();
+    const searchEl = panel.querySelector("#memo-task-search");
+    const listEl = panel.querySelector("#memo-task-search-list");
+    const renderTaskOptions = () => {
+      const q = searchEl.value.trim().toLowerCase();
+      const matches = (q ? taskCandidates.filter(x => matchTaskByNameOrId(x, q)) : taskCandidates).slice(0, 30);
+      listEl.innerHTML = matches.length
+        ? matches.map(x => `<div class="dep-search-item" data-id="${x.id}"><span>${esc(x.title)}${x.projectId ? `<span class="dep-search-proj"> ・ ${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</span><span class="task-id-badge">#${shortId(x.id)}</span></div>`).join("")
+        : `<div class="dep-search-empty">該当するタスクがありません</div>`;
+      listEl.querySelectorAll("[data-id]").forEach(el => {
+        el.onclick = () => { memo.taskId = el.dataset.id; memo.updatedAt = nowISO(); save(); render(); };
+      });
+      listEl.style.display = "block";
+    };
+    searchEl.addEventListener("focus", renderTaskOptions);
+    searchEl.addEventListener("input", renderTaskOptions);
+    searchEl.addEventListener("blur", () => setTimeout(() => { listEl.style.display = "none"; }, 150));
+  }
+  panel.querySelector("[data-testid=memo-edit-btn]").onclick = () => { memoPreview = false; render(); };
+  panel.querySelector("[data-testid=memo-preview-btn]").onclick = () => {
+    const ta = panel.querySelector("#memo-body");
+    if (ta) { memo.body = ta.value; memo.updatedAt = nowISO(); save(); }
+    memoPreview = true; render();
+  };
+  panel.querySelector("[data-testid=memo-archive-btn]").onclick = () => {
+    memo.archivedAt = memo.archivedAt ? null : nowISO();
+    memo.updatedAt = nowISO();
+    commit();
+  };
+  panel.querySelector("[data-testid=memo-delete-btn]").onclick = () => {
+    if (!confirm(`メモ「${memo.title}」を削除しますか？`)) return;
+    memo.deletedAt = nowISO();
+    editingMemoId = null;
+    commit();
+  };
+  const ta = panel.querySelector("#memo-body");
+  if (ta) {
+    let timer = null;
+    ta.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { memo.body = ta.value; memo.updatedAt = nowISO(); save(); }, 400); };
+    ta.onblur = () => { memo.body = ta.value; memo.updatedAt = nowISO(); save(); };
+  }
+}
+
 /*========================================================
   「今日すること」ページ（仕様12）
 ========================================================*/
@@ -3286,8 +3520,23 @@ function renderToday(body, actions) {
       const mode = row.classList.contains("drop-before") ? "before"
         : row.classList.contains("drop-after") ? "after" : "into";
       clearMarks();
-      const dragIds = parseDragIds(e).filter(id => id !== t.id);
+      let dragIds = parseDragIds(e).filter(id => id !== t.id);
       if (!dragIds.length) return;
+      if (e.ctrlKey || e.metaKey) { // Ctrl（Macは⌘）を押しながらドロップ＝複製（③）
+        const copies = duplicateTasks(dragIds);
+        if (!copies.length) return;
+        if (mode === "into") { handleTaskDropMulti(copies, t.id, "into"); }
+        else {
+          const base = ordered.map(x => x.id).filter(id => !copies.includes(id));
+          let pos = base.indexOf(t.id); if (mode === "after") pos += 1; if (pos < 0) pos = base.length;
+          base.splice(pos, 0, ...copies);
+          state.today.manualOrder = base;
+          state.today.updatedAt = nowISO();
+          commit();
+        }
+        toast(`${copies.length}件を複製しました`);
+        return;
+      }
       if (mode === "into") { // サブタスク化（まとめて）
         if (dragIds.length > 1) handleTaskDropMulti(dragIds, t.id, "into");
         else handleTaskDrop(dragIds[0], t.id, "into");
@@ -4090,112 +4339,25 @@ function renderMemos(body, actions) {
   state.memos.forEach(normalizeMemo); // 不完全なメモ（updatedAt欠落など）を補正してから描画（真っ白防止）
   // 一覧はアーカイブ済みメモを除く（検索では見つかる）。編集中のメモがアーカイブ済みなら、そのメモだけは一覧にも残して操作できるようにする。
   const memos = state.memos.filter(m => !m.deletedAt && (!m.archivedAt || m.id === editingMemoId)).sort((a, b) => (b.updatedAt || "") < (a.updatedAt || "") ? -1 : 1);
-  const layout = document.createElement("div");
-  layout.id = "memo-layout";
-
+  // メモ本体（編集フォーム）は右パネル（renderMemoPanel）に表示するので、中央は一覧だけ（④）。
   const list = document.createElement("div");
   list.id = "memo-list";
+  list.className = "solo";
   if (!memos.length) list.innerHTML = `<div class="empty-msg" style="padding:20px 0">メモがありません</div>`;
   for (const memo of memos) {
     const el = document.createElement("div");
     el.className = "memo-item" + (memo.id === editingMemoId ? " active" : "");
     el.setAttribute("data-testid", "memo-item");
+    el.dataset.id = memo.id;
     const linked = memo.taskId ? getTask(memo.taskId)?.title : memo.projectId ? getProject(memo.projectId)?.name : null;
     el.innerHTML = `<div class="m-title">${esc(memo.title)}</div>
       <div class="m-date">${(memo.updatedAt || memo.createdAt || "").slice(0, 10)}${linked ? " · 🔗" + esc(linked) : ""}</div>`;
-    el.onclick = () => { editingMemoId = memo.id; render(); };
+    el.onclick = () => { editingMemoId = memo.id; detailTaskId = null; render(); };
     list.appendChild(el);
   }
-  layout.appendChild(list);
-
-  const editor = document.createElement("div");
-  editor.id = "memo-editor";
-  const memo = state.memos.find(m => m.id === editingMemoId && !m.deletedAt);
-  if (!memo) {
-    editor.innerHTML = `<div class="empty-msg">メモを選択するか、＋新規メモで作成してください</div>`;
-  } else {
-    const projOpts = `<option value="">プロジェクト紐付けなし</option>` + visibleProjects().map(p =>
-      `<option value="${p.id}" ${memo.projectId === p.id ? "selected" : ""}>📁 ${esc(p.name)}</option>`).join("");
-    const linkedTask = memo.taskId ? liveTasks().find(t => t.id === memo.taskId) : null;
-    editor.innerHTML = `
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input id="memo-title" data-testid="memo-title" value="${esc(memo.title)}" style="flex:1;min-width:150px;font-weight:700">
-        <button class="btn small ${memoPreview ? "" : "primary"}" data-testid="memo-edit-btn">編集</button>
-        <button class="btn small ${memoPreview ? "primary" : ""}" data-testid="memo-preview-btn">プレビュー</button>
-        <button class="btn small ${memo.archivedAt ? "primary" : ""}" data-testid="memo-archive-btn" title="${memo.archivedAt ? "アーカイブを解除して一覧に戻す" : "一覧から片付ける（検索では見つかる）"}">${memo.archivedAt ? "🗄️ 解除" : "🗄️ アーカイブ"}</button>
-        <button class="btn small danger" data-testid="memo-delete-btn">削除</button>
-      </div>
-      ${memo.archivedAt ? `<div class="badge" style="align-self:flex-start">🗄️ このメモはアーカイブ済み（一覧非表示・検索対象）</div>` : ""}
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
-        <select id="memo-proj" data-testid="memo-proj" style="flex:1;min-width:140px">${projOpts}</select>
-        <div style="flex:1;min-width:140px">
-          ${linkedTask
-            ? `<span class="dep-chip"><span class="linklike" data-testid="memo-task-open" title="このタスクを開く">☑ ${esc(linkedTask.title)} <span class="task-id-badge">#${shortId(linkedTask.id)}</span></span> <button data-testid="memo-task-clear">✕</button></span>`
-            : `<div class="dep-search">
-                <input id="memo-task-search" data-testid="memo-task-search" placeholder="＋タスクを名前かIDで検索して紐付け..." autocomplete="off">
-                <div id="memo-task-search-list" class="dep-search-list" data-testid="memo-task-search-list"></div>
-              </div>`}
-        </div>
-      </div>
-      ${memoPreview
-        ? `<div id="memo-preview" data-testid="memo-preview">${renderMarkdown(memo.body)}</div>`
-        : `<textarea id="memo-body" data-testid="memo-body" placeholder="**見出し**、*太字*、- リスト、() チェックボックス などMarkdown対応">${esc(memo.body)}</textarea>`}
-    `;
-    const titleEl = editor.querySelector("#memo-title");
-    titleEl.onchange = () => { memo.title = titleEl.value.trim() || "無題のメモ"; memo.updatedAt = nowISO(); save(); renderSidebar(); };
-    editor.querySelector("#memo-proj").onchange = e => { memo.projectId = e.target.value || null; memo.updatedAt = nowISO(); save(); };
-    if (linkedTask) {
-      editor.querySelector("[data-testid=memo-task-open]").onclick = () => openTaskModal(linkedTask.id);
-      editor.querySelector("[data-testid=memo-task-clear]").onclick = () => { memo.taskId = null; memo.updatedAt = nowISO(); save(); render(); };
-    } else {
-      const taskCandidates = liveTasks();
-      const searchEl = editor.querySelector("#memo-task-search");
-      const listEl = editor.querySelector("#memo-task-search-list");
-      const renderTaskOptions = () => {
-        const q = searchEl.value.trim().toLowerCase();
-        const matches = (q ? taskCandidates.filter(x => matchTaskByNameOrId(x, q)) : taskCandidates).slice(0, 30);
-        listEl.innerHTML = matches.length
-          ? matches.map(x => `<div class="dep-search-item" data-id="${x.id}"><span>${esc(x.title)}${x.projectId ? `<span class="dep-search-proj"> ・ ${esc(getProject(x.projectId)?.name || "")}</span>` : ""}</span><span class="task-id-badge">#${shortId(x.id)}</span></div>`).join("")
-          : `<div class="dep-search-empty">該当するタスクがありません</div>`;
-        listEl.querySelectorAll("[data-id]").forEach(el => {
-          el.onclick = () => { memo.taskId = el.dataset.id; memo.updatedAt = nowISO(); save(); render(); };
-        });
-        listEl.style.display = "block";
-      };
-      searchEl.addEventListener("focus", renderTaskOptions);
-      searchEl.addEventListener("input", renderTaskOptions);
-      searchEl.addEventListener("blur", () => setTimeout(() => { listEl.style.display = "none"; }, 150));
-    }
-    editor.querySelector("[data-testid=memo-edit-btn]").onclick = () => { memoPreview = false; render(); };
-    editor.querySelector("[data-testid=memo-preview-btn]").onclick = () => {
-      const ta = editor.querySelector("#memo-body");
-      if (ta) { memo.body = ta.value; memo.updatedAt = nowISO(); save(); }
-      memoPreview = true; render();
-    };
-    editor.querySelector("[data-testid=memo-archive-btn]").onclick = () => {
-      memo.archivedAt = memo.archivedAt ? null : nowISO();
-      memo.updatedAt = nowISO();
-      commit();
-    };
-    editor.querySelector("[data-testid=memo-delete-btn]").onclick = () => {
-      if (!confirm(`メモ「${memo.title}」を削除しますか？`)) return;
-      memo.deletedAt = nowISO();
-      editingMemoId = null;
-      commit();
-    };
-    const ta = editor.querySelector("#memo-body");
-    if (ta) {
-      let timer = null;
-      ta.oninput = () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => { memo.body = ta.value; memo.updatedAt = nowISO(); save(); }, 400);
-      };
-      ta.onblur = () => { memo.body = ta.value; memo.updatedAt = nowISO(); save(); };
-    }
-  }
-  layout.appendChild(editor);
-  body.appendChild(layout);
+  body.appendChild(list);
   body.style.height = "100%";
+  // 選択中のメモがあれば右パネルに内容を出す（renderDetailPanelのメモ分岐が担当。ここでは何もしない）
 }
 /*========================================================
   設定・データ管理（エクスポート/インポート/GAS同期）
