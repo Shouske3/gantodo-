@@ -452,6 +452,12 @@ svg text { user-select: none; }
 @media (min-width: 1001px) {
   #detail-panel.open.panel-wide { width: 46vw; min-width: 480px; max-width: 820px; }
 }
+/* メモ一覧と詳細の境界をドラッグで動かすためのリサイザー（メモ表示中・PCのみ） */
+#detail-resizer { display: none; flex: none; width: 8px; cursor: col-resize; background: transparent; position: relative; z-index: 6; }
+#detail-resizer::before { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+#detail-resizer.show { display: block; }
+#detail-resizer:hover::before, #detail-resizer.dragging::before { background: var(--accent); }
+@media (max-width: 1000px) { #detail-resizer { display: none !important; } }
 @media (max-width: 760px) {
   /* リスト｜ガント・自動順に戻す・＋今日やる・完了を隠す等を、折り返さず必ず1行に収める。
      入りきらない場合はこの行だけを横スワイプできるようにする（ページ全体はスクロールさせない）。 */
@@ -560,6 +566,7 @@ svg text { user-select: none; }
     </div>
     <div id="view-body" data-testid="view-body"></div>
   </div>
+  <div id="detail-resizer" data-testid="detail-resizer" title="ドラッグで幅を調整"></div>
   <aside id="detail-panel" data-testid="detail-panel"></aside>
 </div>
 <button id="fab" data-testid="fab">＋</button>
@@ -2382,9 +2389,62 @@ function closeDetail() {
   renderDetailPanel();
 }
 
+// 詳細パネルの幅（PCでドラッグ調整）。用途別に保存（メモは広め・タスクは狭めなど別々に覚える）。
+// bulk（一括操作）は task と同じ幅を使う。端末ローカルの表示設定なので同期対象外・localStorage保存。
+const panelWidths = { memo: null, task: null };
+try { const m = parseInt(localStorage.getItem("gantodo_panel_w_memo"), 10); if (m > 0) panelWidths.memo = m; } catch { /* 既定幅で動く */ }
+try { const t = parseInt(localStorage.getItem("gantodo_panel_w_task"), 10); if (t > 0) panelWidths.task = t; } catch { /* 既定幅で動く */ }
+let currentPanelMode = null; // "memo" | "task"
+// 指定モードの保存幅を反映し、境界リサイザーを表示する（PCのみ。モバイルはCSSの全画面に任せる）
+function applyPanelWidth(panel, mode) {
+  currentPanelMode = mode;
+  const rez = document.getElementById("detail-resizer");
+  if (rez) rez.classList.add("show");
+  const stored = panelWidths[mode];
+  if (window.innerWidth > 1000 && stored) {
+    const w = Math.max(360, Math.min(stored, window.innerWidth - 320));
+    panel.style.width = w + "px"; panel.style.minWidth = w + "px"; panel.style.maxWidth = w + "px";
+  } else {
+    panel.style.width = ""; panel.style.minWidth = ""; panel.style.maxWidth = ""; // 既定幅（CSS: タスク400px / メモ46vw）
+  }
+}
+function initDetailResizer() {
+  const rez = document.getElementById("detail-resizer");
+  const panel = document.getElementById("detail-panel");
+  if (!rez || !panel) return;
+  let dragging = false;
+  const onMove = e => {
+    if (!dragging) return;
+    let w = window.innerWidth - e.clientX;               // パネルは右端に接しているので、左端(=マウス)からの右側幅
+    w = Math.max(360, Math.min(w, window.innerWidth - 320)); // 一覧側に最低320px残す
+    if (currentPanelMode) panelWidths[currentPanelMode] = w;
+    panel.style.width = w + "px"; panel.style.minWidth = w + "px"; panel.style.maxWidth = w + "px";
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    rez.classList.remove("dragging");
+    document.body.style.userSelect = "";
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    try { if (currentPanelMode && panelWidths[currentPanelMode]) localStorage.setItem("gantodo_panel_w_" + currentPanelMode, String(panelWidths[currentPanelMode])); } catch { /* 保存不可でもその場の幅は効く */ }
+  };
+  rez.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    dragging = true;
+    rez.classList.add("dragging");
+    document.body.style.userSelect = "none";
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  });
+}
+
 function renderDetailPanel() {
   const panel = document.getElementById("detail-panel");
   panel.classList.remove("panel-wide"); // メモ表示時だけ広げる（下のメモ分岐で付け直す）
+  const rez0 = document.getElementById("detail-resizer");
+  if (rez0) rez0.classList.remove("show");
+  panel.style.width = ""; panel.style.minWidth = ""; panel.style.maxWidth = ""; // 各分岐でapplyPanelWidthし直す
   // 1) 複数選択中 → 一括操作メニュー（TickTick風・右パネルに表示）
   for (const id of [...selectedTaskIds]) if (!getTask(id) || getTask(id).deletedAt) selectedTaskIds.delete(id);
   if (selectedTaskIds.size >= 1) { renderBulkPanel(panel); return; }
@@ -2402,6 +2462,7 @@ function renderDetailPanel() {
     return;
   }
   panel.classList.add("open");
+  applyPanelWidth(panel, "task"); // タスク詳細もタスク用の保存幅＋境界リサイザーを有効にする
   const done = t.status === "completed";
   // 開始日/終了日/開始可能日/納期: 通常は年を省いたM/D表示（コンパクト）、クリックでネイティブ日付ピッカー（年も編集可）を表示する
   const dateWidget = (key, testid, value, style = "") => value && editingDateField !== key
@@ -3320,6 +3381,7 @@ function renderBulkPanel(panel) {
   const tasks = bulkSelectedTasks();
   const n = tasks.length;
   panel.classList.add("open");
+  applyPanelWidth(panel, "task"); // 一括操作パネルもタスク用の幅＋境界リサイザーを有効にする
   const allDone = n > 0 && tasks.every(t => t.status === "completed");
   panel.innerHTML = `
     <div class="dp-head">
@@ -3364,6 +3426,7 @@ function renderBulkPanel(panel) {
 function renderMemoPanel(panel, memo) {
   panel.classList.add("open");
   panel.classList.add("panel-wide"); // PCではメモを広い幅で表示（狭くて読みにくい対策）
+  applyPanelWidth(panel, "memo");     // メモ用の保存幅を反映＋境界リサイザーを表示
   const projOpts = `<option value="">プロジェクト紐付けなし</option>` + visibleProjects().map(p =>
     `<option value="${p.id}" ${memo.projectId === p.id ? "selected" : ""}>📁 ${esc(p.name)}</option>`).join("");
   const linkedTask = memo.taskId ? liveTasks().find(t => t.id === memo.taskId) : null;
@@ -5155,6 +5218,7 @@ setInterval(() => {
   state = await loadState();
   save();
   document.body.classList.toggle("sidebar-hidden", !!state.settings.sidebarHidden);
+  initDetailResizer(); // メモ詳細パネルの幅ドラッグ調整を有効化
   render();
   // 同期設定があれば、起動時と5分ごとに自動同期
   if (state.settings.gasUrl) setTimeout(() => syncNow(null, { quiet: true }), 1200);
