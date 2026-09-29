@@ -913,48 +913,70 @@ function idbOpen() {
     rq.onerror = () => rej(rq.error);
   });
 }
+// iOS Safari の「The database connection is closing」等の一過性エラーか判定する。
+function isIdbClosingError(e) {
+  const m = String((e && (e.message || e.name)) || "");
+  return /closing|InvalidStateError|not allowed in the current state/i.test(m);
+}
+// IndexedDB操作を、接続クローズ由来の一過性エラーに対して「接続を作り直して1回だけ再試行」で吸収する。
+// これによりiPhoneで時々出ていた「保存に失敗しました: ... The database connection is closing.」を防ぐ。
+async function withIdb(fn) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const db = await idbOpen();
+      return await fn(db); // db.transaction() が同期的にthrowしてもPromiseのrejectになりcatchで拾える
+    } catch (e) {
+      if (attempt === 0 && isIdbClosingError(e)) {
+        try { if (idbHandle) idbHandle.close(); } catch { /* noop */ }
+        idbHandle = null; // 接続を作り直して再試行
+        continue;
+      }
+      throw e;
+    }
+  }
+}
 // 状態本体などの汎用キー・バリュー（IndexedDBのkvストア。localStorageより桁違いに大きな容量を使える）。
 // seq＝保存の連番。「書き込みに成功した最新の保存」を読み込み時に選ぶために data と一緒に持つ。
 function kvGetRec(key) {
-  return idbOpen().then(db => new Promise((res, rej) => {
+  return withIdb(db => new Promise((res, rej) => {
     const rq = db.transaction("kv").objectStore("kv").get(key);
     rq.onsuccess = () => res(rq.result || null); // {id, data, seq} または null
     rq.onerror = () => rej(rq.error);
   }));
 }
 function kvPut(key, data, seq) {
-  return idbOpen().then(db => new Promise((res, rej) => {
+  return withIdb(db => new Promise((res, rej) => {
     const tx = db.transaction("kv", "readwrite");
     tx.objectStore("kv").put({ id: key, data, seq });
     tx.oncomplete = res;
     tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error || new Error("transaction aborted"));
   }));
 }
 async function fileSave(id, blob) {
-  const db = await idbOpen();
-  return new Promise((res, rej) => {
+  return withIdb(db => new Promise((res, rej) => {
     const tx = db.transaction("files", "readwrite");
     tx.objectStore("files").put({ id, blob });
     tx.oncomplete = res;
     tx.onerror = () => rej(tx.error);
-  });
+    tx.onabort = () => rej(tx.error || new Error("transaction aborted"));
+  }));
 }
 async function fileGet(id) {
-  const db = await idbOpen();
-  return new Promise((res, rej) => {
+  return withIdb(db => new Promise((res, rej) => {
     const rq = db.transaction("files").objectStore("files").get(id);
     rq.onsuccess = () => res(rq.result ? rq.result.blob : null);
     rq.onerror = () => rej(rq.error);
-  });
+  }));
 }
 async function fileDelete(id) {
-  const db = await idbOpen();
-  return new Promise((res, rej) => {
+  return withIdb(db => new Promise((res, rej) => {
     const tx = db.transaction("files", "readwrite");
     tx.objectStore("files").delete(id);
     tx.oncomplete = res;
     tx.onerror = () => rej(tx.error);
-  });
+    tx.onabort = () => rej(tx.error || new Error("transaction aborted"));
+  }));
 }
 // ローカル(IndexedDB)に実体を持っている添付ファイルidの一覧。差分pullで「既に持っている添付は送らないで」とサーバーに伝えるのに使う。
 async function fileKeys() {
