@@ -3891,11 +3891,210 @@ function setAllGanttParentsCollapsed(collapsed) {
 // ガント操作バー用「すべて開く/すべて閉じる」ボタンのHTML（両ガント経路で共用）。
 function ganttFoldAllBtnHtml() {
   const anyOpen = anyGanttParentExpanded();
-  return `<button class="btn small" data-testid="gantt-fold-all" style="margin-left:8px" title="子を持つタスクをまとめて開く/閉じる">${anyOpen ? "すべて閉じる" : "すべて開く"}</button>`;
+  return `<button class="btn small" data-testid="gantt-fold-all" style="margin-left:8px" title="子を持つタスクをまとめて開く/閉じる">${anyOpen ? "すべて閉じる" : "すべて開く"}</button>` +
+    `<button class="btn small" data-testid="gantt-excel" style="margin-left:8px" title="今表示しているガントをExcel(.xlsx)で出力する">📊 Excel出力</button>`;
 }
 function bindGanttFoldAll(actions) {
   const btn = actions.querySelector("[data-testid=gantt-fold-all]");
   if (btn) btn.onclick = () => setAllGanttParentsCollapsed(anyGanttParentExpanded());
+  const ex = actions.querySelector("[data-testid=gantt-excel]");
+  if (ex) ex.onclick = () => exportGanttXlsx(lastGanttRows);
+}
+
+/* ================= Excel(.xlsx)出力：ガントを色付きセルのグリッドで書き出す（外部ライブラリ不要） =================
+   ・drawGanttに渡した行(lastGanttRows)をそのまま使うので、今画面で見えているガントがそのままExcelになる。
+   ・縦＝タスク（プロジェクト/セクション見出し付き）、横＝日付。開始〜終了をプロジェクト色で塗り、納期は◆。
+   ・無圧縮ZIPに最小構成のOOXMLを詰めて本物の.xlsxを生成（Excel/Google スプレッドシートでそのまま開ける）。 */
+let lastGanttRows = []; // 直近にdrawGanttへ渡した行（Excel出力で再利用）
+const XLSX_CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c >>> 0; }
+  return t;
+})();
+function xlsxCrc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = XLSX_CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function xlsxZip(files) { // files=[{name, data:Uint8Array}] → 無圧縮(stored)ZIPのUint8Array
+  const enc = s => new TextEncoder().encode(s);
+  const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
+  const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+  const parts = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc(f.name), data = f.data, crc = xlsxCrc32(data);
+    const local = new Uint8Array([].concat(u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length), u16(name.length), u16(0)));
+    parts.push(local, name, data);
+    central.push({ name, crc, size: data.length, offset });
+    offset += local.length + name.length + data.length;
+  }
+  const cdStart = offset;
+  for (const c of central) {
+    const h = new Uint8Array([].concat(u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(c.crc), u32(c.size), u32(c.size), u16(c.name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(c.offset)));
+    parts.push(h, c.name);
+    offset += h.length + c.name.length;
+  }
+  const eocd = new Uint8Array([].concat(u32(0x06054b50), u16(0), u16(0), u16(central.length), u16(central.length),
+    u32(offset - cdStart), u32(cdStart), u16(0)));
+  parts.push(eocd);
+  const total = parts.reduce((s, a) => s + a.length, 0);
+  const out = new Uint8Array(total);
+  let p = 0; for (const a of parts) { out.set(a, p); p += a.length; }
+  return out;
+}
+function xlsxColLetter(n) { let s = ""; n++; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+function xmlEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function xlsxLighten(hex, amt) { // 白と混ぜて薄い色のARGB("FFxxxxxx")を返す
+  hex = String(hex || "#888888").replace("#", "");
+  if (hex.length === 3) hex = hex.split("").map(c => c + c).join("");
+  const toC = i => parseInt(hex.slice(i, i + 2), 16) || 0;
+  const bl = c => Math.round(c * (1 - amt) + 255 * amt);
+  const h2 = n => n.toString(16).padStart(2, "0").toUpperCase();
+  return "FF" + h2(bl(toC(0))) + h2(bl(toC(2))) + h2(bl(toC(4)));
+}
+function buildGanttXlsxBytes(rows) {
+  rows = (rows || []).slice();
+  if (!rows.some(r => r.kind === "task")) return null;
+  const today = todayStr();
+  // 期間レンジ（表示中タスクの開始・終了・納期の最小〜最大）
+  let min = today, max = today;
+  for (const r of rows) {
+    if (r.kind !== "task") continue;
+    for (const d of [r.task.startDate, r.task.endDate, r.task.dueDate]) { if (!d) continue; if (d < min) min = d; if (d > max) max = d; }
+  }
+  let dayCount = diffDays(max, min) + 1;
+  const MAXD = 370; // 列が多すぎると重いので約1年に制限
+  if (dayCount > MAXD) { max = addDays(min, MAXD - 1); dayCount = MAXD; }
+  const dates = []; for (let i = 0; i < dayCount; i++) dates.push(addDays(min, i));
+  const weekdayOf = s => { const a = s.split("-").map(Number); return new Date(a[0], a[1] - 1, a[2]).getDay(); };
+  const mdOf = s => { const a = s.split("-").map(Number); return a[1] + "/" + a[2]; };
+
+  // ---- スタイル登録 ----
+  const fonts = [{}, { b: 1 }, { b: 1, color: "FFFFFFFF" }]; // 0通常 1太字 2太字白
+  const fills = [{ p: "none" }, { p: "gray125" }];
+  const fillIdx = argb => { for (let i = 2; i < fills.length; i++) if (fills[i].fg === argb) return i; fills.push({ p: "solid", fg: argb }); return fills.length - 1; };
+  const xfs = [{ fontId: 0, fillId: 0 }];
+  const xf = (fontId, fillId, center) => {
+    const key = fontId + "/" + fillId + "/" + (center ? 1 : 0);
+    for (let i = 0; i < xfs.length; i++) if (xfs[i]._k === key) return i;
+    xfs.push({ fontId, fillId, center, _k: key }); return xfs.length - 1;
+  };
+  const F_HEADER = "FFE8EEF7", F_WEEKEND = "FFF3F4F6", F_TODAY = "FFFFE08A", F_SEC = "FFEDEFF2", F_DUE = "FFFFD59A";
+  const stHdr = xf(1, fillIdx(F_HEADER), false);
+  const stHdrC = xf(1, fillIdx(F_HEADER), true);
+  const stHdrWe = xf(1, fillIdx(F_WEEKEND), true);
+  const stHdrToday = xf(1, fillIdx(F_TODAY), true);
+  const stSec = xf(1, fillIdx(F_SEC), false);
+  const stDue = xf(1, fillIdx(F_DUE), true);
+  const projNameStyle = color => xf(2, fillIdx(xlsxLighten(color, 0.25)), false);
+  const barStyle = color => xf(0, fillIdx(xlsxLighten(color, 0.74)), false);
+
+  const INFO = 6; // タスク/プロジェクト/開始/終了/納期/進捗 の6列
+  const rowsXml = [];
+  const cell = (col, rno, o) => { // o={v}=文字列 / {n}=数値 / {}=空（スタイルのみ）
+    const ref = xlsxColLetter(col) + rno, s = o.s ? ` s="${o.s}"` : "";
+    if (o.n !== undefined) return `<c r="${ref}"${s}><v>${o.n}</v></c>`;
+    if (o.v !== undefined && o.v !== "") return `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(o.v)}</t></is></c>`;
+    return `<c r="${ref}"${s}/>`;
+  };
+  // 見出し行
+  let R = 1;
+  {
+    const cs = [
+      cell(0, R, { v: "タスク", s: stHdr }), cell(1, R, { v: "プロジェクト", s: stHdr }),
+      cell(2, R, { v: "開始", s: stHdrC }), cell(3, R, { v: "終了", s: stHdrC }),
+      cell(4, R, { v: "納期", s: stHdrC }), cell(5, R, { v: "進捗%", s: stHdrC }),
+    ];
+    dates.forEach((d, i) => {
+      const st = d === today ? stHdrToday : ([0, 6].includes(weekdayOf(d)) ? stHdrWe : stHdrC);
+      cs.push(cell(INFO + i, R, { v: mdOf(d), s: st }));
+    });
+    rowsXml.push(`<row r="${R}">${cs.join("")}</row>`); R++;
+  }
+  // 本体行
+  for (const r of rows) {
+    const cs = [];
+    if (r.kind === "proj") {
+      const name = r.proj ? r.proj.name : "受信トレイ";
+      const st = projNameStyle(r.proj ? r.proj.color : "#9aa0a6");
+      cs.push(cell(0, R, { v: "■ " + name, s: st }));
+      for (let c = 1; c < INFO; c++) cs.push(cell(c, R, { s: st }));
+    } else if (r.kind === "sec") {
+      cs.push(cell(0, R, { v: "　" + r.sec.name, s: stSec }));
+      for (let c = 1; c < INFO; c++) cs.push(cell(c, R, { s: stSec }));
+    } else {
+      const t = r.task;
+      const color = (getProject(t.projectId) || {}).color || "#5B8DEF";
+      const mark = t.status === "completed" ? "✓ " : "";
+      const indent = "   ".repeat(r.depth || 0);
+      cs.push(cell(0, R, { v: indent + mark + t.title }));
+      cs.push(cell(1, R, { v: getProject(t.projectId) ? getProject(t.projectId).name : "" }));
+      cs.push(cell(2, R, { v: t.startDate || "" }));
+      cs.push(cell(3, R, { v: t.endDate || "" }));
+      cs.push(cell(4, R, { v: t.dueDate || "" }));
+      cs.push(cell(5, R, { n: t.progress || 0 }));
+      const s = t.startDate || t.endDate, e = t.endDate || t.startDate;
+      const bar = barStyle(color);
+      dates.forEach((d, i) => {
+        const isDue = t.dueDate && d === t.dueDate;
+        const inBar = s && e && d >= s && d <= e;
+        if (isDue) cs.push(cell(INFO + i, R, { v: "◆", s: stDue }));
+        else if (inBar) cs.push(cell(INFO + i, R, { s: bar }));
+      });
+    }
+    rowsXml.push(`<row r="${R}">${cs.join("")}</row>`); R++;
+  }
+
+  // ---- styles.xml ----
+  const fontsXml = fonts.map(f => `<font>${f.b ? "<b/>" : ""}${f.color ? `<color rgb="${f.color}"/>` : ""}<sz val="11"/><name val="Calibri"/></font>`).join("");
+  const fillsXml = fills.map(f => f.p === "solid"
+    ? `<fill><patternFill patternType="solid"><fgColor rgb="${f.fg}"/><bgColor indexed="64"/></patternFill></fill>`
+    : `<fill><patternFill patternType="${f.p}"/></fill>`).join("");
+  const xfsXml = xfs.map(x => {
+    const applyFill = x.fillId ? ` applyFill="1"` : "";
+    const applyFont = x.fontId ? ` applyFont="1"` : "";
+    if (x.center) return `<xf numFmtId="0" fontId="${x.fontId}" fillId="${x.fillId}" borderId="0" xfId="0"${applyFont}${applyFill} applyAlignment="1"><alignment horizontal="center"/></xf>`;
+    return `<xf numFmtId="0" fontId="${x.fontId}" fillId="${x.fillId}" borderId="0" xfId="0"${applyFont}${applyFill}/>`;
+  }).join("");
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="${fonts.length}">${fontsXml}</fonts><fills count="${fills.length}">${fillsXml}</fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${xfs.length}">${xfsXml}</cellXfs></styleSheet>`;
+
+  const colsXml = `<cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="2" width="14" customWidth="1"/><col min="3" max="5" width="11" customWidth="1"/><col min="6" max="6" width="8" customWidth="1"/><col min="7" max="${INFO + dayCount}" width="3.4" customWidth="1"/></cols>`;
+  const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane xSplit="6" ySplit="1" topLeftCell="G2" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${colsXml}<sheetData>${rowsXml.join("")}</sheetData></worksheet>`;
+
+  const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="ガント" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+  const wbRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
+  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+
+  const enc = s => new TextEncoder().encode(s);
+  return xlsxZip([
+    { name: "[Content_Types].xml", data: enc(contentTypes) },
+    { name: "_rels/.rels", data: enc(rootRels) },
+    { name: "xl/workbook.xml", data: enc(workbookXml) },
+    { name: "xl/_rels/workbook.xml.rels", data: enc(wbRels) },
+    { name: "xl/styles.xml", data: enc(stylesXml) },
+    { name: "xl/worksheets/sheet1.xml", data: enc(sheetXml) },
+  ]);
+}
+function exportGanttXlsx(rows) {
+  const zip = buildGanttXlsxBytes(rows);
+  if (!zip) { toast("ガントに出力できるタスクがありません", "warn"); return; }
+  const blob = new Blob([zip], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "gantodo-gantt-" + todayStr() + ".xlsx";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast("ガントをExcelで出力しました");
 }
 
 // 表示中のタスク一覧からガント用の行データを構築（プロジェクト別にグループ化）
@@ -3998,6 +4197,7 @@ function ganttScheduleKeepSet() {
 }
 
 function drawGantt(body, rows) {
+  lastGanttRows = rows; // Excel出力で「今見えているガント」をそのまま使うため保持
   if (!rows.length) {
     body.insertAdjacentHTML("beforeend", `<div class="empty-msg">ガントに表示できるタスクがありません</div>`);
     return;
