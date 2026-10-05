@@ -257,6 +257,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .g-name-row.head { font-weight: 700; color: var(--text-dim); background: var(--bg3); }
 .g-name-row.sel { background: var(--accent-dim); box-shadow: inset 3px 0 0 var(--accent); }
 rect.g-sel-row { fill: var(--accent); opacity: .14; pointer-events: none; }
+/* 依存リンク作成（Alt+ドラッグ）中のカーソルとドロップ先ハイライト */
+body.gantt-linking, body.gantt-linking .gbar, body.gantt-linking .g-name-row { cursor: crosshair !important; }
+.g-name-row.link-target { background: var(--accent-dim); box-shadow: inset 0 0 0 2px var(--accent); }
+.gbar.link-target rect { stroke: var(--accent) !important; stroke-width: 2.5 !important; }
 .g-name-row .nm { overflow: hidden; text-overflow: ellipsis; }
 /* ガントの親タスク折りたたみ三角: 大きめ＆押しやすいタップ領域にする */
 .g-tri {
@@ -1998,7 +2002,7 @@ function taskRowEl(t, opts = {}) {
   }
   if (t.repeat && t.repeat.unit) badges.push(`<span class="badge">🔁 ${esc(repeatLabel(t.repeat))}</span>`);
   for (const tag of t.tags || []) badges.push(`<span class="badge tag">#${esc(tag)}</span>`);
-  const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt);
+  const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt && !x.archivedAt);
   if (kids.length) {
     const done = kids.filter(k => k.status === "completed").length;
     badges.push(`<span class="badge">☑ ${done}/${kids.length}</span>`);
@@ -2086,7 +2090,7 @@ function appendTaskTree(container, t, depth = 0, opts = {}) {
 function appendTaskKids(container, t, depth = 0, opts = {}) {
   if (t.collapsed) return;
   const kids = state.tasks
-    .filter(x => x.parentTaskId === t.id && !x.deletedAt)
+    .filter(x => x.parentTaskId === t.id && !x.deletedAt && !x.archivedAt)
     .sort((a, b) => a.sortOrder - b.sortOrder);
   if (kids.length && depth < 5) {
     const sub = document.createElement("div");
@@ -2496,7 +2500,7 @@ function renderDetailPanel() {
     .map(s => `<option value="${s.id}" ${t.sectionId === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("");
   const depCandidates = liveTasks().filter(x =>
     x.id !== t.id && !(t.blockedBy || []).includes(x.id) && !wouldCycle(t.id, x.id));
-  const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort((a, b) => a.sortOrder - b.sortOrder);
+  const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt && !x.archivedAt).sort((a, b) => a.sortOrder - b.sortOrder);
   const linkedMemos = state.memos.filter(m => !m.deletedAt && m.taskId === t.id);
   const na = t.nextAction || {};
   const statusLine = done ? "✅ 完了" : t.waitingOnOther ? "🤝 人に任せ中（返信待ち）" : isBlocked(t) ? "🔒 ブロック中" : isWaiting(t) ? `⏳ ${fmtDisp(t.earliestStartDate)}から着手可` : "▶ 着手可能";
@@ -3819,7 +3823,7 @@ function renderGanttView(body, actions, title) {
   const pushTree = (t, depth) => {
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     if (keepSched && !keepSched.has(t.id)) return; // 日程が無く、日程を持つ子孫も無い → 隠す（サブツリーごと）
-    const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
+    const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt && !x.archivedAt).sort(bySort);
     rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 }); // hasKids→親タスクに折りたたみ三角が出る
     if (t.ganttCollapsed) return; // 折りたたみ中はサブツリーを出さない（バーは親＋子の最大期間で表示＝drawGantt側）
     if (depth < 5) for (const k of kids) pushTree(k, depth + 1);
@@ -4105,7 +4109,7 @@ function ganttRowsFor(tasks) {
   const pushTree = (t, depth) => {
     if (state.settings.ganttHideDone && t.status === "completed") return; // 完了を隠す（サブツリーごと）
     if (keepSched && !keepSched.has(t.id)) return; // 日程が無く、日程を持つ子孫も無い → 隠す（サブツリーごと）
-    const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt).sort(bySort);
+    const kids = state.tasks.filter(x => x.parentTaskId === t.id && !x.deletedAt && !x.archivedAt).sort(bySort);
     rows.push({ kind: "task", task: t, depth, hasKids: kids.length > 0 });
     if (t.ganttCollapsed) return; // 親タスクで折りたたみ中は子（サブツリー）を出さない
     if (depth < 5) for (const k of kids) pushTree(k, depth + 1);
@@ -4434,7 +4438,7 @@ function drawGantt(body, rows) {
   wrap.appendChild(svg);
   body.appendChild(wrap);
   body.insertAdjacentHTML("beforeend", `<div style="color:var(--text-faint);font-size:11px;margin-top:8px">
-    バー: ドラッグで移動・端で伸縮 / ◆=納期 / 黄点線=開始可能日 / 🔒=依存タスク未完了 / 依存の設定はタスク編集画面から</div>`);
+    バー: ドラッグで移動・端で伸縮 / <b>Alt+ドラッグで他タスクへ依存関係を設定</b> / ◆=納期 / 黄点線=開始可能日 / 🔒=依存タスク未完了</div>`);
 
   // 横スクロール位置: 記憶があれば復元、なければ今日を中央付近に（同期的に設定し、
   // 描画後のズレでドラッグ座標が狂わないようにする）
@@ -4476,6 +4480,36 @@ function applyGanttSelection() {
   svg.insertBefore(band, svg.firstChild); // グリッド線・バーより下に敷く
 }
 
+// 依存リンク(Alt+ドラッグ)のドロップ先ハイライト/解決用ヘルパー
+function taskIdAtPoint(x, y) {
+  const el = document.elementFromPoint(x, y);
+  const host = el && el.closest("[data-task]");
+  return host ? host.dataset.task : null;
+}
+function clearGanttLinkHighlight() {
+  document.querySelectorAll(".g-name-row.link-target, .gbar.link-target").forEach(el => el.classList.remove("link-target"));
+}
+function highlightGanttLinkTarget(x, y, srcId) {
+  clearGanttLinkHighlight();
+  const id = taskIdAtPoint(x, y);
+  if (!id || id === srcId) return;
+  const row = document.querySelector(`#gantt-names .g-name-row[data-task="${id}"]`);
+  if (row) row.classList.add("link-target");
+  const bar = document.querySelector(`#gantt-body-svg .gbar[data-task="${id}"]`);
+  if (bar) bar.classList.add("link-target");
+}
+// a（ドラッグ元）が b（ドロップ先）の完了を待つ依存を設定する。b が a の先行（依存元）になる。
+function createDependencyLink(srcId, targetId) {
+  if (!targetId || targetId === srcId) return;
+  const a = getTask(srcId), b = getTask(targetId);
+  if (!a || !b || a.deletedAt || b.deletedAt) return;
+  if ((a.blockedBy || []).includes(targetId)) { toast("すでに依存関係が設定されています"); return; }
+  if (wouldCycle(a.id, targetId)) { toast("⚠ 循環依存になるため設定できません", "warn"); return; }
+  a.blockedBy = [...(a.blockedBy || []), targetId];
+  touch(a);
+  commit();
+  toast(`「${a.title}」は「${b.title}」の完了を待つ依存に設定しました`);
+}
 function attachGanttDrag(svg, dw, rangeStart) {
   let drag = null; // {taskId, mode, startX, origStart, origEnd, moved}
   svg.querySelectorAll(".gbar").forEach(g => {
@@ -4483,6 +4517,13 @@ function attachGanttDrag(svg, dw, rangeStart) {
       const taskId = g.dataset.task;
       const t = getTask(taskId);
       if (!t) return;
+      if (e.altKey) { // Alt（Macはoption）+ドラッグ＝依存リンク作成モード（バーの移動はしない）
+        drag = { taskId, mode: "link", startX: e.clientX, moved: false, g };
+        g.setPointerCapture(e.pointerId);
+        document.body.classList.add("gantt-linking");
+        e.preventDefault();
+        return;
+      }
       const role = e.target.dataset.role;
       drag = {
         taskId,
@@ -4497,6 +4538,11 @@ function attachGanttDrag(svg, dw, rangeStart) {
     });
     g.addEventListener("pointermove", e => {
       if (!drag || drag.g !== g) return;
+      if (drag.mode === "link") { // 依存リンク中はドロップ先を光らせるだけ
+        if (Math.abs(e.clientX - drag.startX) > 3) drag.moved = true;
+        highlightGanttLinkTarget(e.clientX, e.clientY, drag.taskId);
+        return;
+      }
       if (drag.collapsed) return; // 折りたたみ集約バーは変形プレビューしない
       const deltaDays = Math.round((e.clientX - drag.startX) / dw);
       if (Math.abs(e.clientX - drag.startX) > 3) drag.moved = true;
@@ -4532,6 +4578,13 @@ function attachGanttDrag(svg, dw, rangeStart) {
     });
     g.addEventListener("pointerup", e => {
       if (!drag || drag.g !== g) return;
+      if (drag.mode === "link") { // 依存リンク作成：ドロップ先のタスクを先行（依存元）にする
+        const srcId = drag.taskId, moved = drag.moved; drag = null;
+        document.body.classList.remove("gantt-linking");
+        clearGanttLinkHighlight();
+        if (moved) createDependencyLink(srcId, taskIdAtPoint(e.clientX, e.clientY));
+        return;
+      }
       const d = drag; drag = null;
       const t = getTask(d.taskId);
       if (!d.moved) { openTaskModal(d.taskId); return; }
@@ -4544,7 +4597,13 @@ function attachGanttDrag(svg, dw, rangeStart) {
       touch(t);
       commit();
     });
-    g.addEventListener("pointercancel", () => { if (drag && drag.g === g) { drag = null; render(); } });
+    g.addEventListener("pointercancel", () => {
+      if (!drag || drag.g !== g) return;
+      const wasLink = drag.mode === "link"; drag = null;
+      document.body.classList.remove("gantt-linking");
+      clearGanttLinkHighlight();
+      if (!wasLink) render();
+    });
   });
 }
 /*========================================================
