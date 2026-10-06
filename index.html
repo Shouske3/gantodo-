@@ -3860,7 +3860,7 @@ const viewGantt = {};
 function descendantTasks(id) {
   const out = [];
   const walk = pid => {
-    for (const k of state.tasks.filter(x => x.parentTaskId === pid && !x.deletedAt)) { out.push(k); walk(k.id); }
+    for (const k of state.tasks.filter(x => x.parentTaskId === pid && !x.deletedAt && !x.archivedAt)) { out.push(k); walk(k.id); }
   };
   walk(id);
   return out;
@@ -4343,6 +4343,15 @@ function drawGantt(body, rows) {
     }
     // 折りたたみ中の親タスクは、親＋全子孫を包含する最大期間でバーを描く（サブツリーの期間を集約表示）。
     const collapsedParent = r.hasKids && t.ganttCollapsed;
+    // 展開中の親タスクは、子を含む最大期間を「薄い色のバー」で表示する（親自身の期間はこの後、濃い色で重ねる）。
+    const expandedParent = r.hasKids && !t.ganttCollapsed;
+    const aggSpan = expandedParent ? collapsedGanttSpan(t) : null;
+    if (aggSpan) {
+      const ax = dx(aggSpan.start);
+      const aw = Math.max(dw * .6, (diffDays(aggSpan.end, aggSpan.start) + 1) * dw);
+      const aop = t.status === "completed" ? .12 : .22;
+      barsHtml += `<rect x="${ax}" y="${y}" width="${aw}" height="${G_BAR_H}" rx="4" fill="${color}" opacity="${aop}" stroke="${color}" stroke-opacity=".4" data-task="${t.id}" data-testid="gantt-agg-bar" style="cursor:pointer"/>`;
+    }
     let barStart = t.startDate, barEnd = t.endDate;
     if (collapsedParent) {
       const span = collapsedGanttSpan(t);
@@ -4382,8 +4391,8 @@ function drawGantt(body, rows) {
         }
       }
     }
-    // 日付なしタスクのラベル
-    if (!t.startDate && !t.dueDate) {
+    // 日付なしタスクのラベル（ただし、子を含む集約バーを出している親タスクには出さない）
+    if (!t.startDate && !t.dueDate && !aggSpan) {
       barsHtml += `<text x="${tx + 8}" y="${y + 13}" font-size="10" fill="var(--text-faint)" data-task="${t.id}" style="cursor:pointer">（日付未設定）</text>`;
     }
   });
@@ -4448,7 +4457,7 @@ function drawGantt(body, rows) {
   // ---- ドラッグ操作 ----
   attachGanttDrag(svg, dw, rangeStart);
   // マイルストーン・日付なしラベルのクリック
-  svg.querySelectorAll("[data-testid=gantt-milestone], text[data-task]").forEach(el => {
+  svg.querySelectorAll("[data-testid=gantt-milestone], [data-testid=gantt-agg-bar], text[data-task]").forEach(el => {
     el.addEventListener("click", () => openTaskModal(el.dataset.task));
   });
   applyGanttSelection(); // 再描画後も選択行のハイライトを復元
