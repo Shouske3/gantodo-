@@ -5292,7 +5292,9 @@ async function syncNow(statusEl, opts = {}) {
     step = "render";
     save();
     // 入力中に画面を作り直すとフォーカスが失われるため、編集中は再描画を控える
-    const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+    // 手動の「今すぐ同期」(!quiet)は、ユーザーが結果を見たい操作なので入力欄にフォーカスが残っていても必ず再描画する
+    // （iOSはボタンをタップしても入力欄のフォーカスが外れず、再描画が飛ばされて「同期したのに反映されない」ように見えた）。
+    const typing = quiet && document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
     if (!typing) render(); else renderSidebar();
     setStatus("✔ 同期完了 " + new Date().toLocaleTimeString());
     if (!quiet) toast("同期が完了しました");
