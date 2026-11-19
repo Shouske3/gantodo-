@@ -1764,8 +1764,12 @@ function postponeTask(id, n) {
   const target = addDays(todayStr(), n);
   t.startDate = target;
   if (!t.endDate || t.endDate < target) t.endDate = target;
-  state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
-  state.today.updatedAt = nowISO();
+  // 並び順の同期は「新しい方がまるごと勝つ」ため、今日の手動追加に実際に含まれていた時だけ更新時刻を進める
+  // （無関係な「明日へ/今日へ」で更新時刻だけ新しくなり、他端末で並び替えた順を古い順で上書きしていた）
+  if (state.today.manualAdded.includes(id)) {
+    state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
+    state.today.updatedAt = nowISO();
+  }
   touch(t);
   commit();
   toast(n === 1 ? "明日へ先送りしました" : n + "日先へ送りました");
@@ -1786,8 +1790,12 @@ function bringTaskToToday(id) {
   } else if (t.endDate) {
     t.endDate = today;
   }
-  state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
-  state.today.updatedAt = nowISO();
+  // 並び順の同期は「新しい方がまるごと勝つ」ため、今日の手動追加に実際に含まれていた時だけ更新時刻を進める
+  // （無関係な「明日へ/今日へ」で更新時刻だけ新しくなり、他端末で並び替えた順を古い順で上書きしていた）
+  if (state.today.manualAdded.includes(id)) {
+    state.today.manualAdded = state.today.manualAdded.filter(x => x !== id);
+    state.today.updatedAt = nowISO();
+  }
   touch(t);
   commit();
   toast("今日へ移動しました");
@@ -5225,6 +5233,10 @@ async function syncNow(statusEl, opts = {}) {
   if (syncInFlight) { if (!quiet) toast("すでに同期を実行中です。完了までお待ちください", "warn"); return; }
   syncInFlight = true;
   clearTimeout(autoSyncTimer);
+  // 日付をまたいで開きっぱなしだった端末（iOSはバックグラウンド中に1分タイマーが止まる）は、
+  // 復帰直後の同期が日付切り替えより先に走り、前日の「今日すること」のまま相手の並び順を捨て、
+  // さらに前日分でサーバーを上書きしていた。同期の前に必ず日付を切り替えておく。
+  rollTodayIfDateChanged();
   // 表示要素は書き込みのたびに取得する（途中でrender()が走ると要素が作り直されるため）
   const setStatus = s => {
     const el = document.getElementById("sync-status");
@@ -5294,7 +5306,10 @@ async function syncNow(statusEl, opts = {}) {
     // 入力中に画面を作り直すとフォーカスが失われるため、編集中は再描画を控える
     // 手動の「今すぐ同期」(!quiet)は、ユーザーが結果を見たい操作なので入力欄にフォーカスが残っていても必ず再描画する
     // （iOSはボタンをタップしても入力欄のフォーカスが外れず、再描画が飛ばされて「同期したのに反映されない」ように見えた）。
-    const typing = quiet && document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+    // 画面下のクイック追加バー（#global-add）はrender()で作り直されない固定要素なので、そこにフォーカスがあっても再描画してよい
+    // （今日の画面で追加するとqa-inputにフォーカスが戻り、iPhoneではそのまま残るため、自動同期で並び順が画面に反映されなかった）。
+    const ae = document.activeElement;
+    const typing = quiet && ae && ["INPUT", "TEXTAREA", "SELECT"].includes(ae.tagName) && !ae.closest("#global-add");
     if (!typing) render(); else renderSidebar();
     setStatus("✔ 同期完了 " + new Date().toLocaleTimeString());
     if (!quiet) toast("同期が完了しました");
@@ -5559,12 +5574,13 @@ document.addEventListener("paste", e => {
 });
 
 // 日付が変わったら「今日やる」をリセットして再描画（開きっぱなし対策）
-setInterval(() => {
-  if (state.today.date !== todayStr()) {
-    state.today = { date: todayStr(), manualOrder: null, manualAdded: [], updatedAt: nowISO() };
-    commit();
-  }
-}, 60000);
+function rollTodayIfDateChanged() {
+  if (!state || state.today.date === todayStr()) return false;
+  state.today = { date: todayStr(), manualOrder: null, manualAdded: [], updatedAt: nowISO() };
+  save();
+  return true;
+}
+setInterval(() => { if (rollTodayIfDateChanged()) render(); }, 60000);
 
 /* ---- 起動 ---- */
 // loadStateはIndexedDB読み込みのため非同期。起動処理を直列に実行する。
